@@ -304,7 +304,37 @@ def main():
     # Optional: submit
     if args.submit:
         result = api.submit_predictions(predictions, args.set_type)
-        log.info(f"MSE Score: {result.get('mse_score')}")
+        mse = result.get('mse_score')
+        log.info(f"MSE Score: {mse}")
+        
+        # ========== FEEDBACK LOOP: Log submission history ==========
+        from datetime import datetime
+        history_path = Path("data/submission_history.json")
+        
+        # Load existing history
+        if history_path.exists():
+            history = json.loads(history_path.read_text())
+        else:
+            history = {"submissions": []}
+        
+        # Append new submission
+        history["submissions"].append({
+            "timestamp": datetime.now().isoformat(),
+            "set_type": args.set_type,
+            "mse_score": mse,
+            "num_predictions": len(predictions),
+            "predictions": predictions,
+            "config": {
+                "turns": args.turns,
+                "parallel": args.parallel,
+                "confidence_threshold": 0.75,
+                "shot_clock": 6,
+                "early_exit_threshold": 0.85
+            }
+        })
+        
+        history_path.write_text(json.dumps(history, indent=2))
+        log.info(f"Logged submission #{len(history['submissions'])} to submission_history.json")
     
     return predictions
 
