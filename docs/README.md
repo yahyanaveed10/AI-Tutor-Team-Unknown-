@@ -52,7 +52,7 @@ python main.py
 | Component | Technology | Purpose |
 |-----------|------------|---------|
 | Framework | FastAPI | Async API handling |
-| LLM | OpenAI GPT-4o | Structured outputs via Pydantic |
+| LLM | OpenAI  | Structured outputs via Pydantic |
 | Database | JSON (Mock) / Google Sheets | Student state persistence |
 | Validation | Pydantic | Type-safe data models |
 | Config | python-dotenv | Environment management |
