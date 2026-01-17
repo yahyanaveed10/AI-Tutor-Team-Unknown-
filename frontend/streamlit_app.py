@@ -47,6 +47,9 @@ DEFAULT_DEV_STUDENTS = [
     },
 ]
 DEFAULT_DEV_STUDENT_ALLOWLIST = {student["id"] for student in DEFAULT_DEV_STUDENTS}
+RUN_TURNS = 10
+RUN_MAX_CONVOS = 3
+RUN_PARALLEL = 3
 
 
 def init_state() -> None:
@@ -206,7 +209,11 @@ def run_ai_for_student(
             "--student-id",
             student_id,
             "--turns",
-            "10",
+            str(RUN_TURNS),
+            "--max-convos",
+            str(RUN_MAX_CONVOS),
+            "--parallel",
+            str(RUN_PARALLEL),
             "--set-type",
             set_type,
         ]
@@ -214,7 +221,14 @@ def run_ai_for_student(
         cmd = [
             "make",
             "docker-run",
-            f"ARGS=--student-id {student_id} --turns 10 --set-type {set_type}",
+            (
+                "ARGS="
+                f"--student-id {student_id} "
+                f"--turns {RUN_TURNS} "
+                f"--max-convos {RUN_MAX_CONVOS} "
+                f"--parallel {RUN_PARALLEL} "
+                f"--set-type {set_type}"
+            ),
         ]
     env = os.environ.copy()
     env["SET_TYPE"] = set_type
@@ -289,7 +303,14 @@ with st.sidebar:
     st.subheader("Tutor run")
     if selected_student_id:
         st.code(
-            f'make docker-run ARGS="--student-id {selected_student_id} --turns 10 --set-type {dev_set_type}"',
+            (
+                "make docker-run ARGS="
+                f"\"--student-id {selected_student_id} "
+                f"--turns {RUN_TURNS} "
+                f"--max-convos {RUN_MAX_CONVOS} "
+                f"--parallel {RUN_PARALLEL} "
+                f"--set-type {dev_set_type}\""
+            ),
             language="bash",
         )
     run_clicked = st.button("Run AI", disabled=not selected_student_id)
