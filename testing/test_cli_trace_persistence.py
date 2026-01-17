@@ -16,7 +16,7 @@ class FakeLLM:
     def generate_opener(self, topic_name: str) -> str:
         return f"Opener for {topic_name}"
 
-    def analyze(self, state, student_msg: str) -> DetectiveOutput:
+    def analyze_with_verification(self, state, student_msg: str) -> DetectiveOutput:
         return DetectiveOutput(
             is_correct=True,
             reasoning_score=3,
@@ -61,10 +61,11 @@ def test_cli_run_saves_agent_traces(tmp_path, monkeypatch):
         set_type="mini_dev",
         student_id=None,
         submit=False,
+        parallel=1,
     )
     llm = FakeLLM()
     api = FakeAPI()
-    db = DatabaseService(path=str(tmp_path / "state.json"))
+    db = DatabaseService(data_dir=str(tmp_path))
     trace_store = TraceStore(tmp_path / "agent_traces.json")
 
     run_batch(llm, api, db, trace_store, args)

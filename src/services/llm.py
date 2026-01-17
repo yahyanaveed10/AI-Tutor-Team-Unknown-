@@ -98,6 +98,37 @@ CRITICAL: "next_message" must be the literal text the student will see. Do NOT w
         )
         return response.output_text
 
+    def verify_correctness(self, topic: str, student_response: str) -> bool:
+        """Ultra-fast correctness check using lighter model."""
+        # Minimal prompt for speed
+        prompt = f"Topic: {topic}\nStudent: {student_response}\n\nIs this factually correct? Reply: true or false"
+        
+        response = self.client.responses.create(
+            model="gpt-5.2",  # Faster non-pro model for simple check
+            input=prompt,
+            reasoning={"effort": "medium"}
+        )
+        return response.output_text.strip().lower() == "true"
 
 
-
+    def analyze_with_verification(self, state: StudentState, student_response: str) -> DetectiveOutput:
+        """Run double-check only in narrow ambiguity zone (0.50 <= conf <= 0.65)."""
+        result1 = self.analyze(state, student_response)
+        
+        # Only double-check in NARROW ambiguity zone (reduces extra calls)
+        if 0.50 <= result1.confidence <= 0.65:
+            # Verify correctness separately
+            verified_correct = self.verify_correctness(state.topic_name, student_response)
+            
+            # If verifier disagrees with Detective, trust verifier
+            if verified_correct != result1.is_correct:
+                return DetectiveOutput(
+                    is_correct=verified_correct,
+                    reasoning_score=result1.reasoning_score,
+                    misconception=result1.misconception if not verified_correct else None,
+                    estimated_level=result1.estimated_level,
+                    confidence=result1.confidence,
+                    next_message=result1.next_message
+                )
+        
+        return result1

@@ -24,7 +24,8 @@ from src.ui_utils import (
     find_switch_event,
 )
 
-DATA_PATH = ROOT_DIR / "data" / "state.json"
+DATA_DIR = ROOT_DIR / "data"
+LEGACY_STATE_PATH = DATA_DIR / "state.json"
 AGENT_TRACE_PATH = ROOT_DIR / "data" / "agent_traces.json"
 TRACE_STORE = TraceStore(AGENT_TRACE_PATH)
 DEFAULT_BASE_URL = "https://knowunity-agent-olympics-2026-api.vercel.app"
@@ -153,9 +154,25 @@ def fetch_dev_students() -> list[dict[str, Any]]:
 
 def load_state() -> dict[str, Any]:
     """Load the persisted conversation state from disk."""
-    if not DATA_PATH.exists():
-        return {}
-    return json.loads(DATA_PATH.read_text())
+    state_data: dict[str, Any] = {}
+    if LEGACY_STATE_PATH.exists():
+        try:
+            legacy = json.loads(LEGACY_STATE_PATH.read_text())
+            if isinstance(legacy, dict):
+                state_data.update(legacy)
+        except json.JSONDecodeError:
+            pass
+    if not DATA_DIR.exists():
+        return state_data
+    for state_file in DATA_DIR.glob("state_*.json"):
+        try:
+            data = json.loads(state_file.read_text())
+        except json.JSONDecodeError:
+            continue
+        student_id = data.get("student_id", "unknown")
+        topic_id = data.get("topic_id", "unknown")
+        state_data[f"{student_id}:{topic_id}"] = data
+    return state_data
 
 
 def get_student_entries(

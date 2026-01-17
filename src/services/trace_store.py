@@ -36,3 +36,13 @@ class TraceStore:
         traces[student_id] = trace
         self.save(traces)
         return traces
+
+    def append_events(
+        self, student_id: str, events: list[dict[str, str]]
+    ) -> dict[str, list[dict[str, str]]]:
+        """Append events to a student's trace and return merged data."""
+        traces = self.load()
+        traces.setdefault(student_id, [])
+        traces[student_id].extend(events)
+        self.save(traces)
+        return traces

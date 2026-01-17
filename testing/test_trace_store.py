@@ -24,3 +24,15 @@ def test_trace_store_update_student_writes_and_merges(tmp_path):
     data = json.loads(store.path.read_text())
     assert data["student-a"] == trace_a
     assert data["student-b"] == trace_b
+
+
+def test_trace_store_append_events_extends_existing(tmp_path):
+    store = TraceStore(tmp_path / "agent_traces.json")
+    trace_a = [{"agent": "Opener", "detail": "Hello", "topic": "Algebra"}]
+    trace_b = [{"agent": "Tutor", "detail": "Explain", "topic": "Algebra"}]
+
+    store.append_events("student-a", trace_a)
+    store.append_events("student-a", trace_b)
+
+    data = json.loads(store.path.read_text())
+    assert data["student-a"] == trace_a + trace_b

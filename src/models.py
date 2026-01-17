@@ -14,6 +14,17 @@ class DetectiveOutput(BaseModel):
     next_message: str
 
 
+class DiagnosticEvent(BaseModel):
+    """Per-turn diagnostic evidence for finalizer."""
+    turn: int
+    is_correct: bool
+    reasoning_score: int = Field(ge=1, le=5)
+    misconception: Optional[str] = None
+    llm_level: int = Field(ge=1, le=5)  # What LLM suggested
+    computed_level: int = Field(ge=1, le=5)  # What we actually set
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
 class Message(BaseModel):
     role: str
     content: str
@@ -30,4 +41,6 @@ class StudentState(BaseModel):
     history: List[Message] = []
     misconceptions: List[str] = []
     promo_votes: int = 0  # Asymmetric: require 2 votes to promote
-
+    diagnostic_events: List[DiagnosticEvent] = []  # Per-turn evidence log
+    level_locked: bool = False
+    switch_reason: Optional[str] = None  # "confidence" | "shot_clock"
