@@ -8,3 +8,6 @@ venv/
 .vscode/
 *.json
 !.env.example
+AGENTS.md
+leo_project/
+codex_context/

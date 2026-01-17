@@ -7,7 +7,7 @@ from src.models import StudentState
 
 
 class DatabaseService:
-    """Persists student state with set_type directories (parallel-safe)."""
+    """Persists student-topic state with set_type directories (parallel-safe)."""
     
     def __init__(self, data_dir: str = "data", set_type: str = "mini_dev"):
         self.base_dir = Path(data_dir)
@@ -73,4 +73,3 @@ class DatabaseService:
         """Clear all saved state files for current set_type."""
         for state_file in self.data_dir.glob("state_*.json"):
             state_file.unlink()
-
