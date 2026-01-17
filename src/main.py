@@ -292,6 +292,9 @@ def run_batch(
     for student in students:
         sid = student["id"]
         topics = api.get_topics(sid)
+        # Filter by topic_id if specified
+        if args.topic_id:
+            topics = [t for t in topics if t["id"] == args.topic_id]
         for topic in topics:
             tasks.append((student, topic))
 
@@ -410,6 +413,7 @@ def main():
     )
     parser.add_argument("--set-type", type=str, default=settings.SET_TYPE)
     parser.add_argument("--student-id", type=str, default=None)
+    parser.add_argument("--topic-id", type=str, default=None, help="Run specific topic only")
     parser.add_argument(
         "--submit", action="store_true", help="Submit predictions after run"
     )

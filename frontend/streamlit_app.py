@@ -138,23 +138,40 @@ def get_base_url() -> str:
     return os.getenv("KNOWUNITY_BASE_URL", DEFAULT_BASE_URL)
 
 
-def fetch_dev_students() -> list[dict[str, Any]]:
+def fetch_dev_students(set_type: str | None = None, use_allowlist: bool = True) -> list[dict[str, Any]]:
     """Fetch students from the dev set."""
     override = load_dev_students_override()
     if override is not None:
         return override
-    set_type = load_dev_set_type()
+    if not set_type:
+        set_type = load_dev_set_type()
     response = httpx.get(
         f"{get_base_url()}/students", params={"set_type": set_type}, timeout=30
     )
     response.raise_for_status()
     students = response.json().get("students", [])
-    allowlist = load_student_allowlist()
-    if allowlist:
-        students = [student for student in students if student.get("id") in allowlist]
-    if not students and allowlist == DEFAULT_DEV_STUDENT_ALLOWLIST:
-        return list(DEFAULT_DEV_STUDENTS)
+
+    # Only apply allowlist if explicitly requested (for backward compatibility)
+    if use_allowlist:
+        allowlist = load_student_allowlist()
+        if allowlist:
+            students = [student for student in students if student.get("id") in allowlist]
+        if not students and allowlist == DEFAULT_DEV_STUDENT_ALLOWLIST:
+            return list(DEFAULT_DEV_STUDENTS)
+
     return students
+
+
+def fetch_topics_for_student(student_id: str) -> list[dict[str, Any]]:
+    """Fetch topics for a specific student."""
+    try:
+        response = httpx.get(
+            f"{get_base_url()}/students/{student_id}/topics", timeout=30
+        )
+        response.raise_for_status()
+        return response.json().get("topics", [])
+    except httpx.HTTPError:
+        return []
 
 
 def load_state(
@@ -197,6 +214,11 @@ def get_student_entries(
 
 def run_ai_for_student(
     student_id: str,
+    set_type: str,
+    turns: int,
+    max_convos: int,
+    parallel: int,
+    topic_id: str | None = None,
     status_container: st.delta_generator.DeltaGenerator | None = None,
     event_callback: Callable[[str], None] | None = None,
     chat_refresh: Callable[[], None] | None = None,
@@ -205,7 +227,6 @@ def run_ai_for_student(
     run_mode = os.getenv("TUTOR_RUN_MODE", "").strip().lower()
     if not run_mode:
         run_mode = "local" if Path("/.dockerenv").exists() else "docker"
-    set_type = load_dev_set_type()
 
     if run_mode == "local":
         cmd = [
@@ -215,26 +236,30 @@ def run_ai_for_student(
             "--student-id",
             student_id,
             "--turns",
-            str(RUN_TURNS),
+            str(turns),
             "--max-convos",
-            str(RUN_MAX_CONVOS),
+            str(max_convos),
             "--parallel",
-            str(RUN_PARALLEL),
+            str(parallel),
             "--set-type",
             set_type,
         ]
+        if topic_id:
+            cmd.extend(["--topic-id", topic_id])
     else:
+        args = (
+            f"--student-id {student_id} "
+            f"--turns {turns} "
+            f"--max-convos {max_convos} "
+            f"--parallel {parallel} "
+            f"--set-type {set_type}"
+        )
+        if topic_id:
+            args += f" --topic-id {topic_id}"
         cmd = [
             "make",
             "docker-run",
-            (
-                "ARGS="
-                f"--student-id {student_id} "
-                f"--turns {RUN_TURNS} "
-                f"--max-convos {RUN_MAX_CONVOS} "
-                f"--parallel {RUN_PARALLEL} "
-                f"--set-type {set_type}"
-            ),
+            f"ARGS={args}",
         ]
     env = os.environ.copy()
     env["SET_TYPE"] = set_type
@@ -272,6 +297,7 @@ def run_ai_for_student(
 
 def run_submit_for_set(
     set_type: str,
+    parallel: int,
     status_container: st.delta_generator.DeltaGenerator | None = None,
 ) -> list[str]:
     """Submit predictions for a set_type via Docker and capture logs."""
@@ -287,7 +313,7 @@ def run_submit_for_set(
             set_type,
             "--submit",
             "--parallel",
-            str(RUN_PARALLEL),
+            str(parallel),
         ]
     else:
         cmd = [
@@ -297,7 +323,7 @@ def run_submit_for_set(
                 "ARGS="
                 f"--set-type {set_type} "
                 f"--submit "
-                f"--parallel {RUN_PARALLEL}"
+                f"--parallel {parallel}"
             ),
         ]
     env = os.environ.copy()
@@ -336,7 +362,37 @@ st.title("AI Tutor Dev Console")
 st.caption("Dev-only student selection with dockerized tutor runs.")
 
 with st.sidebar:
-    dev_set_type = load_dev_set_type()
+    st.subheader("Configuration")
+    dev_set_type = st.selectbox(
+        "Set Type",
+        ["mini_dev", "dev", "eval"],
+        index=0,
+        help="Select which dataset to work with"
+    )
+
+    st.subheader("Run Parameters")
+    run_turns = st.number_input(
+        "Turns per conversation",
+        min_value=1,
+        max_value=20,
+        value=10,
+        help="Number of messages per student-topic session"
+    )
+    run_max_convos = st.number_input(
+        "Max conversations",
+        min_value=0,
+        max_value=100,
+        value=3,
+        help="Limit total sessions (0 = unlimited)"
+    )
+    run_parallel = st.number_input(
+        "Parallel workers",
+        min_value=1,
+        max_value=10,
+        value=3,
+        help="Number of parallel conversations"
+    )
+
     st.subheader(f"Students ({dev_set_type} set)")
     include_legacy_state = st.checkbox(
         "Include legacy state.json",
@@ -344,9 +400,11 @@ with st.sidebar:
         help="Load older data/state.json alongside per-set state files.",
     )
     selected_student_id = None
+    selected_topic_id = None
     students: list[dict[str, Any]] = []
     try:
-        students = fetch_dev_students()
+        # Don't use allowlist in UI - show all students for selected set_type
+        students = fetch_dev_students(dev_set_type, use_allowlist=False)
     except httpx.HTTPError as exc:
         st.error(f"Student list error: {exc}")
     except ValueError as exc:
@@ -366,19 +424,37 @@ with st.sidebar:
             student_options,
             format_func=lambda student_id: student_labels.get(student_id, student_id),
         )
+
+        # Topic selection
+        if selected_student_id:
+            topics = fetch_topics_for_student(selected_student_id)
+            if topics:
+                st.subheader("Topics")
+                topic_options = [topic["id"] for topic in topics]
+                topic_labels = {topic["id"]: topic.get("name", topic["id"]) for topic in topics}
+                selected_topic_id = st.selectbox(
+                    "Select topic to run",
+                    ["All topics"] + topic_options,
+                    format_func=lambda tid: topic_labels.get(tid, tid) if tid != "All topics" else tid,
+                )
+                if selected_topic_id == "All topics":
+                    selected_topic_id = None
+            else:
+                st.info("No topics available for this student.")
     else:
         st.warning("No dev students available.")
 
     st.subheader("Tutor run")
     if selected_student_id:
+        topic_arg = f" --topic-id {selected_topic_id}" if selected_topic_id else ""
         st.code(
             (
                 "make docker-run ARGS="
                 f"\"--student-id {selected_student_id} "
-                f"--turns {RUN_TURNS} "
-                f"--max-convos {RUN_MAX_CONVOS} "
-                f"--parallel {RUN_PARALLEL} "
-                f"--set-type {dev_set_type}\""
+                f"--turns {run_turns} "
+                f"--max-convos {run_max_convos} "
+                f"--parallel {run_parallel} "
+                f"--set-type {dev_set_type}{topic_arg}\""
             ),
             language="bash",
         )
@@ -628,6 +704,11 @@ if run_clicked and selected_student_id:
         with st.spinner("Running tutor in Docker..."):
             log_lines = run_ai_for_student(
                 selected_student_id,
+                dev_set_type,
+                run_turns,
+                run_max_convos,
+                run_parallel,
+                selected_topic_id,
                 run_status_slot,
                 st.session_state["run_events"][selected_student_id].append,
                 refresh_view,
@@ -655,7 +736,7 @@ if submit_clicked:
     submit_status.info("⏳ Submission in progress...")
     try:
         with st.spinner("Submitting predictions..."):
-            run_submit_for_set(submit_set_type, submit_status)
+            run_submit_for_set(submit_set_type, run_parallel, submit_status)
         submit_status.success("✅ Submission completed.")
         st.rerun()
     except Exception as exc:
