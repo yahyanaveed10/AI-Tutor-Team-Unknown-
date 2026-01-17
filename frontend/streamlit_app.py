@@ -407,7 +407,21 @@ def render_pitch_view(
             return
         topic_trace = [event for event in trace if event.get("topic") == topic_choice]
         timeline = condense_trace_timeline(topic_trace)
-        metrics = extract_diagnosis_metrics(topic_trace)
+        diagnostic_events = entry.get("diagnostic_events", [])
+        metrics = []
+        if diagnostic_events:
+            for event in diagnostic_events:
+                metrics.append(
+                    {
+                        "turn": float(event.get("turn", len(metrics) + 1)),
+                        "level": float(event.get("computed_level", 0)),
+                        "confidence": float(event.get("confidence", 0.0)),
+                    }
+                )
+        else:
+            metrics = extract_diagnosis_metrics(topic_trace)
+        switch_reason = entry.get("switch_reason")
+        level_locked = entry.get("level_locked")
         switch_event = find_switch_event(topic_trace)
 
         st.markdown("**Decision timeline**")
@@ -470,10 +484,34 @@ def render_pitch_view(
             st.metric("Confidence", entry.get("confidence", "—"))
 
         st.markdown("**Why it switched**")
-        if switch_event:
+        reason_map = {
+            "confidence": "Confidence Gate: Level frozen at confidence threshold.",
+            "shot_clock": "Shot Clock: Forced switch after diagnosis window.",
+            "early_exit": "Early Exit: High confidence + correct reasoning.",
+        }
+        if switch_reason:
+            detail = reason_map.get(switch_reason, f"Switch reason: {switch_reason}")
+            status = "locked" if level_locked else "unlocked"
+            st.info(f"{detail} (level {status})")
+        elif switch_event:
             st.info(f"{switch_event['agent']}: {switch_event['detail']}")
         else:
             st.info("No switch signal recorded yet.")
+
+        misconception = entry.get("misconceptions", [])
+        if misconception:
+            st.markdown("**Key misconception**")
+            st.write(misconception[0])
+        if diagnostic_events:
+            st.markdown("**Evidence snapshot**")
+            last_event = diagnostic_events[-1]
+            st.write(
+                "Turn "
+                f"{last_event.get('turn', '—')}: "
+                f"LLM level {last_event.get('llm_level', '—')}, "
+                f"computed level {last_event.get('computed_level', '—')}, "
+                f"confidence {last_event.get('confidence', 0.0):.2f}"
+            )
 
         history = entry.get("history", [])
         opener = next(
