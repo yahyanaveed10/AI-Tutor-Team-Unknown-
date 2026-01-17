@@ -22,6 +22,15 @@ python -m src.main --turns 8 --max-convos 1 --set-type mini_dev
 
 ---
 
+## 🐳 Docker
+
+```bash
+# Build + run (loads secrets from local .env, persists output to host, and passes CLI flags)
+docker build -t ai-tutor . && docker run --rm --env-file .env -v "$(pwd)/data:/app/data" ai-tutor --turns 8 --max-convos 1 --set-type mini_dev
+```
+
+---
+
 ## 🏗️ Architecture: "The Peer-Reviewed Detective"
 
 Our system uses a **Phase-based State Machine** to ensure 100% score stability:
