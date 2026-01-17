@@ -19,33 +19,45 @@ graph TD
     Start((Start)) --> Opener[Turn 0: Opener]
     Opener --> StudentResponse1[Student Response]
     
-    subgraph "Diagnosis Phase (Detective Mode)"
+    subgraph "Diagnosis Phase (Detective + Verifier)"
     Diagnosis{Confidence < 0.75 AND Turn < 6?}
-    Analyze[LLM Detective: Analyze & Score]
-    Smooth[Confidence Smoothing: max +0.2 per turn]
+    Analyze[Detective: Extract Evidence]
+    Verify{Ambiguity Zone?}
+    Verifier[Verifier: Double-Check Correctness]
+    Asymmetric[Asymmetric Level Update]
+    LogEvent[Log DiagnosticEvent]
     NextDiag[Next Diagnostic Question]
     end
     
     subgraph "Tutoring Phase (Adaptive Persona)"
-    Freeze[Level Frozen: Shot-Clock or Confidence met]
-    Tutor[Adaptive Tutoring: Coach/Professor/Colleague]
+    Freeze[Level Frozen]
+    Tutor[Tutor: Coach/Professor/Colleague]
+    end
+    
+    subgraph "End of Session"
+    Finalizer[Deterministic Finalizer: Median of Last 3]
+    Submit[Submit Prediction]
     end
     
     StudentResponse1 --> Diagnosis
-    Diagnosis -- "Yes (Continue Probing)" --> Analyze
-    Analyze --> Smooth
-    Smooth --> NextDiag
+    Diagnosis -- "Yes" --> Analyze
+    Analyze --> Verify
+    Verify -- "0.55-0.75" --> Verifier
+    Verify -- "No" --> Asymmetric
+    Verifier --> Asymmetric
+    Asymmetric --> LogEvent
+    LogEvent --> NextDiag
     NextDiag --> StudentMsg[Student Response]
     StudentMsg --> Diagnosis
     
-    Diagnosis -- "No (Transition)" --> Freeze
+    Diagnosis -- "No" --> Freeze
     Freeze --> Tutor
-    Tutor --> StudentMsgT[Student Response]
-    StudentMsgT --> Tutor
+    Tutor --> Finalizer
+    Finalizer --> Submit
     
     style Opener fill:#f9f,stroke:#333,stroke-width:2px
-    style Freeze fill:#00ff00,stroke:#333,stroke-width:2px
-    style Tutor fill:#00ffff,stroke:#333,stroke-width:2px
+    style Verifier fill:#ffa500,stroke:#333,stroke-width:2px
+    style Finalizer fill:#00ff00,stroke:#333,stroke-width:2px
 ```
 
 ---
@@ -64,20 +76,46 @@ Each turn, the **GPT-5.2-pro** model analyzes the response:
 
 ---
 
-## 🧠 Diagnostic Signal Processing
+## 🧠 MSE-Reducing Signal Processing
 
-To prevent "Analysis Paralysis" and handle LLM stochasticity, we implement two critical safety layers:
+We implement **5 layers** of statistical calibration to reduce MSE:
 
-### 1. Confidence Smoothing
-We use deterministic smoothing to prevent confidence spikes and regressions.
+### 1. Asymmetric Level Updates
+LLM is a **feature extractor**, Controller makes the decision:
 ```python
-smoothed_conf = min(prev_confidence + 0.2, raw_confidence)
-```
-- **Why?** LLMs can be overconfident. This ensures we have at least 3nd-4th turn consistency before switching.
+# Promotion: Require 2 consecutive votes
+if llm_level > old_level:
+    promo_votes += 1
+    if promo_votes >= 2:
+        level += 1
 
-### 2. The "Shot Clock" (Hard Lock)
-If confidence is stuck (e.g., student is silent or ambiguous), we **force a switch at Turn 6**.
-- **Reason**: To guarantee a "Tutoring Quality" score. Spending 10 turns on diagnosis results in a 0 for tutoring.
+# Demotion: Require strong evidence
+if llm_level < old_level:
+    if not is_correct and reasoning_score <= 2:
+        level -= 1
+```
+
+### 2. Confidence Smoothing
+Prevents spikes and regressions:
+```python
+smoothed_conf = min(prev_confidence + 0.15, raw_confidence)
+```
+
+### 3. The Verifier (Ambiguity Zone)
+Runs **only when 0.55 ≤ confidence ≤ 0.75**. If it disagrees with Detective on correctness, trust the Verifier.
+
+### 4. Diagnostic Event Logging
+Every diagnosis turn logs structured evidence:
+```python
+DiagnosticEvent(turn, is_correct, reasoning_score, llm_level, computed_level, confidence)
+```
+
+### 5. Deterministic Finalizer
+At end of session, compute **median of last 3 events** to prevent "last-turn swing":
+```python
+if switch_reason == "shot_clock" or confidence < 0.75:
+    final_level = median(last_3_computed_levels)
+```
 
 ---
 
@@ -100,15 +138,16 @@ Once the level is frozen, we switch to an **Adaptive Persona**.
 
 | Feature | Logic | Benefit |
 |---------|-------|---------|
-| **Confidence Smoothing** | `max +0.2 / turn` | Prevents diagnostic overfitting |
-| **Threshold = 0.75** | Realistic for LLMs | Faster transition to tutoring |
-| **Shot Clock (Turn 6)** | Mandatory switch | Guarantees tutoring judge-score |
-| **Level Freezing** | Lock `estimated_level` | Prevents late-session drift |
+| **Asymmetric Updates** | 2 votes for promotion | Prevents single-turn jumps |
+| **Confidence Smoothing** | `max +0.15 / turn` | Slower, more stable transitions |
+| **Verifier** | Ambiguity zone only | Reduces correctness noise |
+| **Shot Clock (Turn 6)** | Mandatory switch | Guarantees tutoring score |
+| **Deterministic Finalizer** | Median of last 3 | Prevents last-turn swing |
 
 ---
 
 ## 📊 Expected Outcomes
 
-- **MSE < 0.8**: High-confidence diagnosis via trap questions.
+- **MSE < 0.5**: Multi-layer calibration reduces variance.
 - **Tutoring Score > 8**: Persona-aligned adaptive teaching.
-- **Robustness**: 100% completion rate via fail-safe shot-clock logic.
+- **Robustness**: 100% completion rate via fail-safe shot-clock + finalizer.

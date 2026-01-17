@@ -15,7 +15,7 @@ import logging
 from pathlib import Path
 
 from src.config import settings
-from src.models import StudentState, Message
+from src.models import StudentState, Message, DiagnosticEvent
 from src.services.llm import LLMService
 from src.services.knowunity import KnowunityClient
 from src.services.database import DatabaseService
@@ -29,6 +29,7 @@ def run_conversation(
     api: KnowunityClient,
     db: DatabaseService,
     student_id: str,
+    student_name: str,
     topic: dict,
     turns: int
 ) -> int:
@@ -36,7 +37,7 @@ def run_conversation(
     
     topic_id = topic["id"]
     topic_name = topic["name"]
-    log.info(f"Starting: {topic_name}")
+    log.info(f"[{student_name}] Starting: {topic_name}")
     
     # Start conversation
     conv = api.start_conversation(student_id, topic_id)
@@ -51,11 +52,11 @@ def run_conversation(
     
     # Turn 0: Generate opener (trap question)
     opener = llm.generate_opener(topic_name)
-    log.info(f"[Turn 0] Tutor: {opener[:80]}...")
+    log.info(f"[{student_name}] Tutor: {opener[:60]}...")
     
     response = api.interact(conv_id, opener)
     student_msg = response["student_response"]
-    log.info(f"[Turn 0] Student: {student_msg[:80]}...")
+    log.info(f"[{student_name}] Student: {student_msg[:60]}...")
     
     state.history.append(Message(role="tutor", content=opener))
     state.history.append(Message(role="student", content=student_msg))
@@ -74,11 +75,13 @@ def run_conversation(
             level_frozen = True
             tutoring_started = True
             switch_reason = "shot_clock"
-            log.warning(f">>> SHOT CLOCK: Forcing switch at Turn {SHOT_CLOCK} (Conf={state.confidence:.2f})")
+            state.level_locked = True
+            state.switch_reason = "shot_clock"
+            log.warning(f"[{student_name}] >>> SHOT CLOCK: Forcing switch at Turn {SHOT_CLOCK} (Conf={state.confidence:.2f})")
         
         if not level_frozen and state.confidence < 0.75:
-            # DIAGNOSIS PHASE
-            analysis = llm.analyze(state, student_msg)
+            # DIAGNOSIS PHASE (with verification in ambiguity zone)
+            analysis = llm.analyze_with_verification(state, student_msg)
             
             # ========== EVIDENCE-BASED LEVEL CALCULATION ==========
             # Use LLM as feature extractor, not judge
@@ -92,20 +95,29 @@ def run_conversation(
                 0.8 * (1 if analysis.misconception else 0)
             )
             
-            # Asymmetric level updates
-            if llm_level > old_level:
+            # FIRST 2 TURNS: Collect evidence, set baseline from average
+            if state.turn_count == 1:
+                state.estimated_level = llm_level
+                log.info(f"    [{student_name}] → Initial estimate Level {llm_level} (turn 1)")
+            elif state.turn_count == 2:
+                # Average of first 2 estimates (variance reduction)
+                avg_level = round((old_level + llm_level) / 2)
+                state.estimated_level = max(1, min(5, avg_level))
+                log.info(f"    [{student_name}] → Baseline set to Level {state.estimated_level} (avg of turns 1-2)")
+            # SUBSEQUENT TURNS: Apply asymmetric rules
+            elif llm_level > old_level:
                 # Promotion: require 2 consecutive votes
                 state.promo_votes += 1
                 if state.promo_votes >= 2:
                     state.estimated_level = min(old_level + 1, 5)
                     state.promo_votes = 0
-                    log.info(f"    → Promoted to Level {state.estimated_level} (2 votes)")
+                    log.info(f"    [{student_name}] → Promoted to Level {state.estimated_level} (2 votes)")
             elif llm_level < old_level:
                 # Demotion: require strong evidence (wrong + low reasoning)
                 if not analysis.is_correct and analysis.reasoning_score <= 2:
                     state.estimated_level = max(old_level - 1, 1)
                     state.promo_votes = 0
-                    log.info(f"    → Demoted to Level {state.estimated_level} (strong evidence)")
+                    log.info(f"    [{student_name}] → Demoted to Level {state.estimated_level} (strong evidence)")
             else:
                 # Same level: reset promo votes if consistent
                 state.promo_votes = 0
@@ -120,28 +132,68 @@ def run_conversation(
                 state.misconceptions.append(analysis.misconception)
             
             tutor_msg = analysis.next_message
-            log.info(f"[DIAGNOSIS Turn {state.turn_count}] Level={state.estimated_level} Conf={smoothed_conf:.2f} (LLM={llm_level}, signal={signal:.1f})")
+            log.info(f"[{student_name}] [DIAGNOSIS Turn {state.turn_count}] Level={state.estimated_level} Conf={smoothed_conf:.2f} (LLM={llm_level}, signal={signal:.1f})")
             
+            # ========== LOG DIAGNOSTIC EVENT ==========
+            event = DiagnosticEvent(
+                turn=state.turn_count,
+                is_correct=analysis.is_correct,
+                reasoning_score=analysis.reasoning_score,
+                misconception=analysis.misconception,
+                llm_level=llm_level,
+                computed_level=state.estimated_level,
+                confidence=smoothed_conf
+            )
+            state.diagnostic_events.append(event)
+            
+            # ========== EARLY EXIT: Skip remaining diagnosis if extremely confident ==========
+            # Require 3+ events so finalizer has enough data for stable median
+            if (analysis.confidence >= 0.85 
+                and analysis.is_correct 
+                and analysis.reasoning_score >= 4
+                and len(state.diagnostic_events) >= 3):
+                level_frozen = True
+                tutoring_started = True
+                switch_reason = "early_exit"
+                state.level_locked = True
+                state.switch_reason = "early_exit"
+                log.info(f"[{student_name}] >>> EARLY EXIT: High confidence ({analysis.confidence:.2f}) + correct + good reasoning")
             # Level freezing: once confident, lock it
-            if state.confidence >= 0.75:
+            elif state.confidence >= 0.75:
                 level_frozen = True
                 tutoring_started = True
                 switch_reason = "confidence"
-                log.info(f">>> Level FROZEN at {state.estimated_level} (confidence={state.confidence:.2f})")
+                state.level_locked = True
+                state.switch_reason = "confidence"
+                log.info(f"[{student_name}] >>> Level FROZEN at {state.estimated_level} (confidence={state.confidence:.2f})")
         else:
             # TUTORING PHASE
             tutoring_started = True
             tutor_msg = llm.tutor(state, student_msg)
-            log.info(f"[TUTORING Turn {state.turn_count}] Teaching at Level {state.estimated_level}")
+            log.info(f"[{student_name}] [TUTORING Turn {state.turn_count}] Teaching at Level {state.estimated_level}")
         
         # Send to student
         response = api.interact(conv_id, tutor_msg)
         student_msg = response["student_response"]
-        log.info(f"[Student Response]: {student_msg[:60]}...")
+        log.info(f"[{student_name}] [Student Response]: {student_msg[:60]}...")
         
         state.history.append(Message(role="tutor", content=tutor_msg))
         state.history.append(Message(role="student", content=student_msg))
         state.turn_count += 1
+    
+    # ========== DETERMINISTIC FINALIZER ==========
+    # Use median of last K diagnostic events to stabilize the final level
+    if state.diagnostic_events:
+        K = min(3, len(state.diagnostic_events))  # Last 3 events or fewer
+        recent_levels = [e.computed_level for e in state.diagnostic_events[-K:]]
+        recent_levels.sort()
+        median_level = recent_levels[len(recent_levels) // 2]
+        
+        # Only adjust if significantly different and not in ambiguity zone
+        if state.switch_reason == "shot_clock" or state.confidence < 0.75:
+            # In ambiguous cases, trust the median more
+            state.estimated_level = median_level
+            log.info(f"    [FINALIZER] Adjusted to median level {median_level} (from last {K} events)")
     
     log.info(f"=== Session Complete: Level={state.estimated_level}, Confidence={state.confidence:.2f} ===")
     
@@ -160,9 +212,11 @@ def main():
     parser.add_argument("--set-type", type=str, default=settings.SET_TYPE)
     parser.add_argument("--student-id", type=str, default=None)
     parser.add_argument("--submit", action="store_true", help="Submit predictions after run")
+    parser.add_argument("--parallel", type=int, default=1, 
+                        help="Number of parallel conversations (default: 1 = sequential)")
     args = parser.parse_args()
     
-    log.info(f"Config: set_type={args.set_type}, turns={args.turns}, max_convos={args.max_convos or 'all'}")
+    log.info(f"Config: set_type={args.set_type}, turns={args.turns}, max_convos={args.max_convos or 'all'}, parallel={args.parallel}")
     
     llm = LLMService()
     api = KnowunityClient()
@@ -175,29 +229,62 @@ def main():
     
     log.info(f"Found {len(students)} students")
     
-    predictions = []
-    convo_count = 0
-    
+    # Build task list: (student_id, topic)
+    tasks = []
     for student in students:
         sid = student["id"]
-        log.info(f"\n=== Student: {student.get('name', sid)} ===")
-        
         topics = api.get_topics(sid)
-        
         for topic in topics:
-            # Check conversation limit
-            if args.max_convos > 0 and convo_count >= args.max_convos:
-                log.info(f"Reached max conversations limit ({args.max_convos})")
-                break
-            
+            tasks.append((student, topic))
+    
+    # Apply max_convos limit
+    if args.max_convos > 0:
+        tasks = tasks[:args.max_convos]
+    
+    log.info(f"Processing {len(tasks)} conversations (parallel={args.parallel})")
+    
+    # Process conversations
+    if args.parallel > 1:
+        import asyncio
+        import concurrent.futures
+        
+        def process_task(task):
+            student, topic = task
+            sid = student["id"]
             try:
-                level = run_conversation(llm, api, db, sid, topic, args.turns)
+                name = student.get('name', sid)
+                log.info(f"\n=== Student: {name} - {topic['name']} ===")
+                level = run_conversation(llm, api, db, sid, name, topic, args.turns)
+                return {
+                    "student_id": sid,
+                    "topic_id": topic["id"],
+                    "predicted_level": level
+                }
+            except Exception as e:
+                log.error(f"Error for {sid}: {e}")
+                return {
+                    "student_id": sid,
+                    "topic_id": topic["id"],
+                    "predicted_level": 3  # Default fallback
+                }
+        
+        # Use ThreadPoolExecutor for parallel processing
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.parallel) as executor:
+            predictions = list(executor.map(process_task, tasks))
+    else:
+        # Sequential processing (original behavior)
+        predictions = []
+        for student, topic in tasks:
+            sid = student["id"]
+            name = student.get('name', sid)
+            log.info(f"\n=== Student: {name} ===")
+            try:
+                level = run_conversation(llm, api, db, sid, name, topic, args.turns)
                 predictions.append({
                     "student_id": sid,
                     "topic_id": topic["id"],
                     "predicted_level": level
                 })
-                convo_count += 1
             except Exception as e:
                 log.error(f"Error: {e}")
                 predictions.append({
@@ -205,11 +292,6 @@ def main():
                     "topic_id": topic["id"],
                     "predicted_level": 3  # Default fallback
                 })
-                convo_count += 1
-        
-        # Also break outer loop if limit reached
-        if args.max_convos > 0 and convo_count >= args.max_convos:
-            break
     
     # Save predictions
     Path("data").mkdir(exist_ok=True)
