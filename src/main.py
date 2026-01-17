@@ -428,7 +428,7 @@ def main():
 
     llm = LLMService()
     api = KnowunityClient()
-    db = DatabaseService()
+    db = DatabaseService(set_type=args.set_type)
     trace_store = TraceStore()
 
     return run_batch(llm, api, db, trace_store, args)
