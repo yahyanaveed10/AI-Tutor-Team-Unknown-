@@ -241,7 +241,9 @@ def main():
     if args.max_convos > 0:
         tasks = tasks[:args.max_convos]
     
-    log.info(f"Processing {len(tasks)} conversations (parallel={args.parallel})")
+    # Cap parallelism to number of tasks (avoid idle workers)
+    actual_parallel = min(args.parallel, len(tasks))
+    log.info(f"Processing {len(tasks)} conversations (parallel={actual_parallel})")
     
     # Process conversations
     if args.parallel > 1:
@@ -269,7 +271,7 @@ def main():
                 }
         
         # Use ThreadPoolExecutor for parallel processing
-        with concurrent.futures.ThreadPoolExecutor(max_workers=args.parallel) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=actual_parallel) as executor:
             predictions = list(executor.map(process_task, tasks))
     else:
         # Sequential processing (original behavior)
