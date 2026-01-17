@@ -37,6 +37,16 @@ class LLMService:
 
     def _voice_profile_for_level(self, level: Optional[int]) -> tuple[str, dict]:
         """Map predicted level to a voice id + voice_settings dict."""
+        if not settings.USE_ELEVENLABS_VOICE_SETTINGS:
+            # Use voice switching only (no style/stability tuning)
+            if level is None:
+                return (settings.ELEVENLABS_VOICE_ID_NEUTRAL, {})
+            if level <= 2:
+                return (settings.ELEVENLABS_VOICE_ID_CALM, {})
+            if level >= 4:
+                return (settings.ELEVENLABS_VOICE_ID_CHALLENGING, {})
+            return (settings.ELEVENLABS_VOICE_ID_NEUTRAL, {})
+
         # Default to neutral when unknown
         if level is None:
             return (

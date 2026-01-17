@@ -25,9 +25,10 @@ class ElevenLabsTTS:
         model_id: str = "eleven_multilingual_v2",
         output_format: str = "mp3_44100_128",
     ) -> None:
-        self.api_key = api_key or settings.ELEVENLABS_API_KEY
-        self.base_url = base_url or settings.ELEVENLABS_BASE_URL
-        self.voice_id = voice_id or settings.ELEVENLABS_VOICE_ID
+        # .env values sometimes contain accidental leading spaces; strip to be safe.
+        self.api_key = (api_key or settings.ELEVENLABS_API_KEY or "").strip() or None
+        self.base_url = (base_url or settings.ELEVENLABS_BASE_URL).strip()
+        self.voice_id = (voice_id or settings.ELEVENLABS_VOICE_ID).strip()
         self.model_id = model_id
         self.output_format = output_format
 
@@ -71,5 +72,18 @@ class ElevenLabsTTS:
 
         with httpx.Client(timeout=30) as client:
             response = client.post(url, headers=headers, json=payload)
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                # ElevenLabs often returns useful JSON error details on failure.
+                detail = None
+                try:
+                    detail = response.json()
+                except Exception:
+                    detail = response.text
+                raise httpx.HTTPStatusError(
+                    f"{e} | ElevenLabs detail: {detail}",
+                    request=e.request,
+                    response=e.response,
+                )
             return response.content

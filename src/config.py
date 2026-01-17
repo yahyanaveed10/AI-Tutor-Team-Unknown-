@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     ELEVENLABS_VOICE_ID_CHALLENGING: str = "21m00Tcm4TlvDq8ikWAM"
 
     # Voice settings (0.0 - 1.0), used to shape delivery.
+    # If you want to ignore these settings entirely and only switch voices by ID,
+    # set USE_ELEVENLABS_VOICE_SETTINGS=false in your .env.
+    USE_ELEVENLABS_VOICE_SETTINGS: bool = True
+
     ELEVENLABS_CALM_STABILITY: float = 0.7
     ELEVENLABS_CALM_SIMILARITY_BOOST: float = 0.8
     ELEVENLABS_CALM_STYLE: float = 0.2
