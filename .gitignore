@@ -10,3 +10,4 @@ venv/
 !.env.example
 AGENTS.md
 leo_project/
+codex_context/

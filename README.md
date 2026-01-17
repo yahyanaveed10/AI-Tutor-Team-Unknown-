@@ -25,9 +25,45 @@ python -m src.main --turns 8 --max-convos 1 --set-type mini_dev
 ## 🐳 Docker
 
 ```bash
-# Build + run (loads secrets from local .env, persists output to host, and passes CLI flags)
-docker build -t ai-tutor . && docker run --rm --env-file .env -v "$(pwd)/data:/app/data" ai-tutor --turns 8 --max-convos 1 --set-type mini_dev
+# Build image
+make docker-build
+
+# Run a test session (1 student, 8 turns)
+make docker-run ARGS="--turns 8 --max-convos 1 --set-type mini_dev"
+
+# Standard run (all students in dev set)
+make docker-run ARGS="--set-type dev"
+
+# Debug a specific student
+make docker-run ARGS="--student-id <UUID> --turns 10"
+
+# Limit total conversations (for quick testing)
+make docker-run ARGS="--max-convos 3"
+
+# Submit final predictions to leaderboard
+make docker-run ARGS="--submit"
+
+# Run the Streamlit UI (uses Docker for tutor runs)
+make docker-ui
 ```
+
+---
+
+## 🖥️ Streamlit UI
+
+```bash
+# Install deps
+pip install -r requirements.txt
+
+# Run UI (host)
+streamlit run frontend/streamlit_app.py
+
+# Run UI in Docker
+make docker-ui
+```
+
+- Uses dev students only and runs the tutor via `make docker-run`.
+- Requires Docker running and a valid `.env`.
 
 ---
 
@@ -54,6 +90,14 @@ KNOWUNITY_X_API_KEY=sk_team_...
 SET_TYPE=mini_dev               # mini_dev | dev | eval
 TURNS_PER_CONVERSATION=8         # Messages per session
 MAX_CONVERSATIONS=0              # 0 = All students, or limit to X
+
+# UI Controls
+# Comma-separated dev student IDs for the Streamlit UI allowlist
+DEV_STUDENT_IDS=1c6afe74-c388-4eb1-b82e-8326d95e29a3,2ee4a025-4845-47f4-a634-3c9e423a4b0e,2b9da93c-5616-49ca-999c-a894b9d004a3
+# Optional JSON override for dev students (list or {"students": [...]})
+DEV_STUDENTS_JSON=[{"id":"1c6afe74-c388-4eb1-b82e-8326d95e29a3","name":"Alex Test","grade_level":8},{"id":"2ee4a025-4845-47f4-a634-3c9e423a4b0e","name":"Sam Struggle","grade_level":9},{"id":"2b9da93c-5616-49ca-999c-a894b9d004a3","name":"Maya Advanced","grade_level":11}]
+# Dataset type used by the Streamlit UI for listing + runs (mini_dev | dev | eval)
+DEV_SET_TYPE=mini_dev
 ```
 
 ---
