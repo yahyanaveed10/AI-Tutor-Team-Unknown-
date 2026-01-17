@@ -64,6 +64,7 @@ make docker-ui
 - Uses dev students only and runs the tutor via `make docker-run`.
 - Requires Docker running and a valid `.env`.
 - Includes a Pitch Mode toggle for demo-friendly agent summaries.
+- Includes a submit panel with confirmation and on-screen submission history.
 
 ---
 

@@ -18,6 +18,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from src.services.trace_store import TraceStore
+from src.services.submission_history import load_submission_history, summarize_submissions
 from src.ui_utils import (
     condense_trace_timeline,
     extract_diagnosis_metrics,
@@ -27,6 +28,7 @@ from src.ui_utils import (
 DATA_DIR = ROOT_DIR / "data"
 LEGACY_STATE_PATH = DATA_DIR / "state.json"
 AGENT_TRACE_PATH = ROOT_DIR / "data" / "agent_traces.json"
+SUBMISSION_HISTORY_PATH = DATA_DIR / "submission_history.json"
 TRACE_STORE = TraceStore(AGENT_TRACE_PATH)
 DEFAULT_BASE_URL = "https://knowunity-agent-olympics-2026-api.vercel.app"
 DEFAULT_DEV_STUDENTS = [
@@ -155,19 +157,23 @@ def fetch_dev_students() -> list[dict[str, Any]]:
     return students
 
 
-def load_state() -> dict[str, Any]:
+def load_state(
+    set_type: str | None = None,
+    include_legacy: bool = False,
+) -> dict[str, Any]:
     """Load the persisted conversation state from disk."""
     state_data: dict[str, Any] = {}
-    if LEGACY_STATE_PATH.exists():
+    if include_legacy and LEGACY_STATE_PATH.exists():
         try:
             legacy = json.loads(LEGACY_STATE_PATH.read_text())
             if isinstance(legacy, dict):
                 state_data.update(legacy)
         except json.JSONDecodeError:
             pass
-    if not DATA_DIR.exists():
+    data_dir = DATA_DIR / set_type if set_type else DATA_DIR
+    if not data_dir.exists():
         return state_data
-    for state_file in DATA_DIR.glob("state_*.json"):
+    for state_file in data_dir.glob("state_*.json"):
         try:
             data = json.loads(state_file.read_text())
         except json.JSONDecodeError:
@@ -264,6 +270,64 @@ def run_ai_for_student(
     return log_lines
 
 
+def run_submit_for_set(
+    set_type: str,
+    status_container: st.delta_generator.DeltaGenerator | None = None,
+) -> list[str]:
+    """Submit predictions for a set_type via Docker and capture logs."""
+    run_mode = os.getenv("TUTOR_RUN_MODE", "").strip().lower()
+    if not run_mode:
+        run_mode = "local" if Path("/.dockerenv").exists() else "docker"
+    if run_mode == "local":
+        cmd = [
+            "python",
+            "-m",
+            "src.main",
+            "--set-type",
+            set_type,
+            "--submit",
+            "--parallel",
+            str(RUN_PARALLEL),
+        ]
+    else:
+        cmd = [
+            "make",
+            "docker-run",
+            (
+                "ARGS="
+                f"--set-type {set_type} "
+                f"--submit "
+                f"--parallel {RUN_PARALLEL}"
+            ),
+        ]
+    env = os.environ.copy()
+    env["SET_TYPE"] = set_type
+    log_lines: list[str] = []
+
+    process = subprocess.Popen(
+        cmd,
+        cwd=ROOT_DIR,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        env=env,
+    )
+
+    if process.stdout:
+        for line in process.stdout:
+            clean = line.rstrip()
+            log_lines.append(clean)
+            if status_container and clean:
+                status_container.info(f"⏳ Submitting... {clean[:120]}")
+
+    process.wait()
+    if process.returncode != 0:
+        raise RuntimeError(f"Submit failed with exit code {process.returncode}")
+
+    return log_lines
+
+
 st.set_page_config(page_title="AI Tutor Dev Console", layout="wide")
 init_state()
 hydrate_agent_traces()
@@ -274,6 +338,11 @@ st.caption("Dev-only student selection with dockerized tutor runs.")
 with st.sidebar:
     dev_set_type = load_dev_set_type()
     st.subheader(f"Students ({dev_set_type} set)")
+    include_legacy_state = st.checkbox(
+        "Include legacy state.json",
+        value=False,
+        help="Load older data/state.json alongside per-set state files.",
+    )
     selected_student_id = None
     students: list[dict[str, Any]] = []
     try:
@@ -320,6 +389,10 @@ with st.sidebar:
         help="Show a storyboard view for demoing the agent behavior.",
     )
 
+    st.subheader("Leaderboard submit")
+    submit_set_type = st.selectbox("Submit set type", ["mini_dev", "dev", "eval"])
+    submit_clicked = st.button("Submit predictions")
+
 
 left, right = st.columns([2, 1], gap="large")
 
@@ -338,7 +411,10 @@ with left:
 
 def load_entries_for_selected_student() -> list[dict[str, Any]]:
     """Load stored chat entries for the selected student."""
-    state_data = load_state()
+    state_data = load_state(
+        set_type=dev_set_type,
+        include_legacy=include_legacy_state,
+    )
     if selected_student_id:
         return get_student_entries(state_data, selected_student_id)
     return []
@@ -574,6 +650,17 @@ if run_clicked and selected_student_id:
         st.session_state["run_state"][selected_student_id] = f"error: {exc}"
         run_status_slot.error(f"Run failed: {exc}")
 
+if submit_clicked:
+    submit_status = st.empty()
+    submit_status.info("⏳ Submission in progress...")
+    try:
+        with st.spinner("Submitting predictions..."):
+            run_submit_for_set(submit_set_type, submit_status)
+        submit_status.success("✅ Submission completed.")
+        st.rerun()
+    except Exception as exc:
+        submit_status.error(f"Submission failed: {exc}")
+
 student_entries = load_entries_for_selected_student()
 current_trace = (
     st.session_state.get("agent_traces", {}).get(selected_student_id, [])
@@ -584,6 +671,24 @@ if pitch_mode:
     render_pitch_view(student_entries, current_trace)
 else:
     render_chat_view(student_entries)
+
+st.divider()
+st.subheader("Submission history")
+history = load_submission_history(SUBMISSION_HISTORY_PATH)
+summary = summarize_submissions(history.get("submissions", []))
+if summary["rows"]:
+    st.dataframe(summary["rows"], use_container_width=True)
+    stats = summary.get("stats")
+    if stats:
+        metric_cols = st.columns(3)
+        metric_cols[0].metric("Best MSE", f"{stats['best']:.4f}")
+        metric_cols[1].metric("Average MSE", f"{stats['avg']:.4f}")
+        metric_cols[2].metric("Trend", f"{stats['trend']:+.4f}")
+    if summary.get("best"):
+        st.markdown("**Best submission config**")
+        st.json(summary["best"].get("config", {}))
+else:
+    st.info("No submission history yet. Run a submit to populate this table.")
 
 with right:
     st.subheader("Agent activity")
