@@ -51,15 +51,16 @@ def run_conversation(
     
     # Turn 0: Generate opener (trap question)
     opener = llm.generate_opener(topic_name)
+    state.history.append(Message(role="tutor", content=opener))
+    db.save_state(state)
     log.info(f"[Turn 0] Tutor: {opener[:80]}...")
     
     response = api.interact(conv_id, opener)
     student_msg = response["student_response"]
-    log.info(f"[Turn 0] Student: {student_msg[:80]}...")
-    
-    state.history.append(Message(role="tutor", content=opener))
     state.history.append(Message(role="student", content=student_msg))
     state.turn_count = 1
+    db.save_state(state)
+    log.info(f"[Turn 0] Student: {student_msg[:80]}...")
     
     tutoring_started = False
     level_frozen = False  # Once confident, lock the level
@@ -120,6 +121,8 @@ def run_conversation(
                 state.misconceptions.append(analysis.misconception)
             
             tutor_msg = analysis.next_message
+            state.history.append(Message(role="tutor", content=tutor_msg))
+            db.save_state(state)
             log.info(f"[DIAGNOSIS Turn {state.turn_count}] Level={state.estimated_level} Conf={smoothed_conf:.2f} (LLM={llm_level}, signal={signal:.1f})")
             
             # Level freezing: once confident, lock it
@@ -132,16 +135,17 @@ def run_conversation(
             # TUTORING PHASE
             tutoring_started = True
             tutor_msg = llm.tutor(state, student_msg)
+            state.history.append(Message(role="tutor", content=tutor_msg))
+            db.save_state(state)
             log.info(f"[TUTORING Turn {state.turn_count}] Teaching at Level {state.estimated_level}")
         
         # Send to student
         response = api.interact(conv_id, tutor_msg)
         student_msg = response["student_response"]
-        log.info(f"[Student Response]: {student_msg[:60]}...")
-        
-        state.history.append(Message(role="tutor", content=tutor_msg))
         state.history.append(Message(role="student", content=student_msg))
         state.turn_count += 1
+        db.save_state(state)
+        log.info(f"[Student Response]: {student_msg[:60]}...")
     
     log.info(f"=== Session Complete: Level={state.estimated_level}, Confidence={state.confidence:.2f} ===")
     
@@ -227,4 +231,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Iterable
 
 
@@ -52,3 +54,34 @@ def parse_agent_trace(log_lines: Iterable[str]) -> list[dict[str, str]]:
             )
 
     return trace
+
+
+def load_agent_traces(path: str | Path) -> dict[str, list[dict[str, str]]]:
+    """Load persisted agent traces from disk."""
+    trace_path = Path(path)
+    if not trace_path.exists():
+        return {}
+    try:
+        data = json.loads(trace_path.read_text())
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_agent_traces(path: str | Path, traces: dict[str, list[dict[str, str]]]) -> None:
+    """Persist agent traces to disk."""
+    trace_path = Path(path)
+    trace_path.parent.mkdir(exist_ok=True)
+    trace_path.write_text(json.dumps(traces, indent=2))
+
+
+def update_agent_traces(
+    path: str | Path,
+    student_id: str,
+    trace: list[dict[str, str]],
+) -> dict[str, list[dict[str, str]]]:
+    """Update persisted agent traces for a student and return merged data."""
+    traces = load_agent_traces(path)
+    traces[student_id] = trace
+    save_agent_traces(path, traces)
+    return traces

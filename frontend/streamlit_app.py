@@ -7,7 +7,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 import streamlit as st
@@ -16,9 +16,10 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from src.ui_utils import parse_agent_trace
+from src.ui_utils import load_agent_traces, parse_agent_trace, update_agent_traces
 
 DATA_PATH = ROOT_DIR / "data" / "state.json"
+AGENT_TRACE_PATH = ROOT_DIR / "data" / "agent_traces.json"
 DEFAULT_BASE_URL = "https://knowunity-agent-olympics-2026-api.vercel.app"
 DEFAULT_DEV_STUDENTS = [
     {
@@ -45,6 +46,54 @@ def init_state() -> None:
     st.session_state.setdefault("run_logs", {})
     st.session_state.setdefault("agent_traces", {})
     st.session_state.setdefault("last_status", {})
+    st.session_state.setdefault("run_events", {})
+    st.session_state.setdefault("run_state", {})
+
+
+def hydrate_agent_traces() -> None:
+    """Load persisted agent traces into session state."""
+    persisted = load_agent_traces(AGENT_TRACE_PATH)
+    if not persisted:
+        return
+    current = st.session_state.get("agent_traces", {})
+    for student_id, trace in persisted.items():
+        current.setdefault(student_id, trace)
+    st.session_state["agent_traces"] = current
+
+
+def extract_run_event(line: str) -> str | None:
+    """Filter and normalize run log lines for UI display."""
+    if "HTTP Request:" in line or "httpx" in line.lower():
+        return None
+    cleaned = line.replace("INFO:", "", 1).replace("WARNING:", "", 1).strip()
+    keep_tokens = (
+        "Config:",
+        "Found ",
+        "Starting:",
+        "[Turn 0]",
+        "[DIAGNOSIS Turn",
+        "[TUTORING Turn",
+        ">>>",
+        "=== Session Complete",
+        "Saved ",
+        "Reached max conversations limit",
+    )
+    if any(token in cleaned for token in keep_tokens):
+        return cleaned
+    return None
+
+
+def should_refresh_chat(line: str) -> bool:
+    """Return True when log lines suggest new chat content."""
+    chat_tokens = (
+        "[Turn 0] Tutor:",
+        "[Turn 0] Student:",
+        "[DIAGNOSIS Turn",
+        "[TUTORING Turn",
+        "[Student Response]:",
+        "Saved ",
+    )
+    return any(token in line for token in chat_tokens)
 
 
 def load_student_allowlist() -> set[str]:
@@ -120,7 +169,10 @@ def get_student_entries(
 
 
 def run_ai_for_student(
-    student_id: str, log_container: st.delta_generator.DeltaGenerator | None = None
+    student_id: str,
+    status_container: st.delta_generator.DeltaGenerator | None = None,
+    event_callback: Callable[[str], None] | None = None,
+    chat_refresh: Callable[[], None] | None = None,
 ) -> list[str]:
     """Run the dockerized tutor for a single student and capture logs."""
     run_mode = os.getenv("TUTOR_RUN_MODE", "").strip().lower()
@@ -164,8 +216,14 @@ def run_ai_for_student(
         for line in process.stdout:
             clean = line.rstrip()
             log_lines.append(clean)
-            if log_container:
-                log_container.code("\n".join(log_lines[-200:]))
+            event = extract_run_event(clean)
+            if event:
+                if event_callback:
+                    event_callback(event)
+                if status_container:
+                    status_container.info(f"⏳ Running tutor... {event}")
+            if chat_refresh and should_refresh_chat(clean):
+                chat_refresh()
 
     process.wait()
     if process.returncode != 0:
@@ -176,11 +234,10 @@ def run_ai_for_student(
 
 st.set_page_config(page_title="AI Tutor Dev Console", layout="wide")
 init_state()
+hydrate_agent_traces()
 
 st.title("AI Tutor Dev Console")
 st.caption("Dev-only student selection with dockerized tutor runs.")
-
-run_log_slot = st.empty()
 
 with st.sidebar:
     dev_set_type = load_dev_set_type()
@@ -219,42 +276,96 @@ with st.sidebar:
         )
     run_clicked = st.button("Run AI", disabled=not selected_student_id)
 
-if run_clicked and selected_student_id:
-    try:
-        with st.spinner("Running tutor in Docker..."):
-            log_lines = run_ai_for_student(selected_student_id, run_log_slot)
-        st.session_state["run_logs"][selected_student_id] = log_lines
-        st.session_state["agent_traces"][selected_student_id] = parse_agent_trace(
-            log_lines
-        )
-        st.session_state["last_status"][selected_student_id] = "completed"
-        st.rerun()
-    except Exception as exc:
-        st.session_state["last_status"][selected_student_id] = f"error: {exc}"
-        run_log_slot.error(f"Run failed: {exc}")
-
-state_data = load_state()
-student_entries: list[dict[str, Any]] = []
-if selected_student_id:
-    student_entries = get_student_entries(state_data, selected_student_id)
 
 left, right = st.columns([2, 1], gap="large")
 
 with left:
-    st.subheader("Chat history")
-    if not selected_student_id:
-        st.info("Select a dev student to view their chat history.")
-    elif not student_entries:
-        st.info("No chat history yet. Run the tutor to generate one.")
-    else:
-        topic_labels = [entry.get("topic_name", "Topic") for entry in student_entries]
-        tabs = st.tabs(topic_labels)
-        for tab, entry in zip(tabs, student_entries):
-            with tab:
-                history = entry.get("history", [])
-                for message in history:
-                    with st.chat_message(message.get("role", "assistant")):
-                        st.markdown(message.get("content", ""))
+    run_status_slot = st.empty()
+    chat_container = st.empty()
+    if selected_student_id:
+        run_state = st.session_state.get("run_state", {}).get(selected_student_id)
+        if run_state == "running":
+            run_status_slot.info("⏳ Tutor run in progress...")
+        elif run_state == "completed":
+            run_status_slot.success("✅ Tutor run completed.")
+        elif run_state and run_state.startswith("error"):
+            run_status_slot.error(run_state)
+
+def render_chat_view() -> list[dict[str, Any]]:
+    state_data = load_state()
+    entries: list[dict[str, Any]] = []
+    if selected_student_id:
+        entries = get_student_entries(state_data, selected_student_id)
+    with chat_container.container():
+        st.subheader("Chat history")
+        if not selected_student_id:
+            st.info("Select a dev student to view their chat history.")
+        elif not entries:
+            st.info("No chat history yet. Run the tutor to generate one.")
+        else:
+            topic_labels = [entry.get("topic_name", "Topic") for entry in entries]
+            tabs = st.tabs(topic_labels)
+            for tab, entry in zip(tabs, entries):
+                with tab:
+                    run_events = st.session_state.get("run_events", {}).get(
+                        selected_student_id, []
+                    )
+                    filtered_events = [
+                        event
+                        for event in run_events
+                        if entry.get("topic_name") and entry.get("topic_name") in event
+                    ]
+                    display_events = filtered_events or run_events
+                    if display_events:
+                        with st.chat_message("assistant"):
+                            st.markdown(
+                                "**Run events**\n"
+                                + "\n".join(f"- {event}" for event in display_events[-8:])
+                            )
+                    history = entry.get("history", [])
+                    for message in history:
+                        role = message.get("role", "assistant")
+                        display_role = "assistant"
+                        if role == "student":
+                            display_role = "user"
+                        elif role == "tutor":
+                            display_role = "assistant"
+                        with st.chat_message(display_role):
+                            st.markdown(message.get("content", ""))
+    return entries
+
+
+if run_clicked and selected_student_id:
+    st.session_state["run_state"][selected_student_id] = "running"
+    st.session_state["run_events"][selected_student_id] = []
+    run_status_slot.info("⏳ Tutor run in progress...")
+
+    def refresh_chat() -> None:
+        render_chat_view()
+
+    try:
+        with st.spinner("Running tutor in Docker..."):
+            log_lines = run_ai_for_student(
+                selected_student_id,
+                run_status_slot,
+                st.session_state["run_events"][selected_student_id].append,
+                refresh_chat,
+            )
+        st.session_state["run_logs"][selected_student_id] = log_lines
+        trace = parse_agent_trace(log_lines)
+        st.session_state["agent_traces"][selected_student_id] = trace
+        update_agent_traces(AGENT_TRACE_PATH, selected_student_id, trace)
+        st.session_state["last_status"][selected_student_id] = "completed"
+        st.session_state["run_state"][selected_student_id] = "completed"
+        run_status_slot.success("✅ Tutor run completed.")
+        render_chat_view()
+        st.rerun()
+    except Exception as exc:
+        st.session_state["last_status"][selected_student_id] = f"error: {exc}"
+        st.session_state["run_state"][selected_student_id] = f"error: {exc}"
+        run_status_slot.error(f"Run failed: {exc}")
+
+student_entries = render_chat_view()
 
 with right:
     st.subheader("Agent activity")
@@ -291,14 +402,3 @@ with right:
             st.dataframe(trace, use_container_width=True)
     else:
         st.info("Run the tutor to see agent activity.")
-
-    st.subheader("Run log")
-    log_lines = (
-        st.session_state.get("run_logs", {}).get(selected_student_id, [])
-        if selected_student_id
-        else []
-    )
-    if log_lines:
-        st.code("\n".join(log_lines[-200:]), language="text")
-    else:
-        st.caption("No logs captured yet.")

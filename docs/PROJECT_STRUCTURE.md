@@ -47,7 +47,8 @@ AI-Tutor-Team-Unknown-/
 │   └── test_single.py        # Test single conversation
 │
 ├── 📁 data/                  # 💾 Local Data (gitignored)
-│   ├── db.json               # Mock database
+│   ├── state.json            # Turn-by-turn chat history
+│   ├── agent_traces.json     # Parsed agent activity from Streamlit runs
 │   └── predictions.json      # Saved predictions
 │
 └── 📁 testing/               # 🧪 Tests

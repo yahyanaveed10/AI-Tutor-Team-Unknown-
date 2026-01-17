@@ -134,6 +134,7 @@ python -m src.main --submit
 │       └── database.py  # State persistence (JSON)
 ├── data/
 │   ├── state.json       # Detailed turn-by-turn logs
+│   ├── agent_traces.json # Parsed agent activity from Streamlit runs
 │   └── predictions.json # Final output for submission
 └── docs/                # [Click here for Technical Docs](./docs/README.md)
 ```
