@@ -56,3 +56,14 @@ class KnowunityClient:
         )
         r.raise_for_status()
         return r.json()
+
+    def evaluate_tutoring(self, set_type: str = None) -> dict:
+        """Evaluate tutoring quality for all conversations in the set."""
+        set_type = set_type or settings.SET_TYPE
+        r = httpx.post(
+            f"{self.base}/evaluate/tutoring",
+            headers=self.headers,
+            json={"set_type": set_type}
+        )
+        r.raise_for_status()
+        return r.json()

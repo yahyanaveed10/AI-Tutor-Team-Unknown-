@@ -1,95 +1,99 @@
 # 🧠 AI Tutor - Team Unknown
 
 > **Winner-ready AI Tutor Engine** for the Knowunity Agent Olympics 2026.
-> Built to infer student understanding level (1-5) and teach adaptively using **gpt-5.2-pro**.
+> Built to infer student understanding level (1-5) and teach adaptively using **GPT-5.2-pro**.
 
 ---
 
 ## ⚡ Quick Start
 
 ```bash
-# 1. Setup with uv (fast!)
+# 1. Setup
 uv venv && source .venv/bin/activate
 uv pip install -r requirements.txt
 
 # 2. Configure
-cp .env.example .env
-# Edit .env with your OpenAI and Knowunity API keys
+cp .env.example .env   # Add your API keys
 
-# 3. Run a test session (3 students, 10 turns)
-python -m src.main --turns 10 --max-convos 3 --set-type mini_dev --submit
+# 3. Run (parallel, auto-submit)
+python -m src.main --set-type mini_dev --turns 10 --parallel 5 --submit
 ```
 
 ---
 
 ## 🏗️ Architecture: "The Peer-Reviewed Detective"
 
-Our system uses a **Multi-Agent Orchestration** pattern with 5 specialized agents:
+Multi-Agent Orchestration with **GPT-5.2 prompt patterns**:
 
-| Agent | Role | When Called |
-|-------|------|-------------|
-| **Opener** | Deploy trap question | Turn 0 |
-| **Detective** | Analyze & extract evidence | Turns 1-5 |
-| **Verifier** | Double-check correctness | Ambiguity zone (0.55-0.75) |
-| **Tutor** | Adaptive teaching | After level frozen |
-| **Finalizer** | Median of last 3 events | End of session |
-
-> **MSE-Reducing Features**: Asymmetric level updates, confidence smoothing, verifier in ambiguity zone, deterministic finalizer.
-
----
-
-## ⚙️ Configuration
-
-Edit `.env` for persistent settings:
-```bash
-OPENAI_API_KEY=sk-...
-KNOWUNITY_X_API_KEY=sk_team_...
-
-# System Controls
-SET_TYPE=mini_dev               # mini_dev | dev | eval
-TURNS_PER_CONVERSATION=10       # Messages per session
-MAX_CONVERSATIONS=0             # 0 = All students, or limit to X
-```
+| Agent | Role | GPT-5.2 Pattern |
+|-------|------|-----------------|
+| **Opener** | Trap question | `<discriminative_power>` |
+| **Detective** | Analyze evidence | `<calibration_rules>`, `<self_check>` |
+| **Verifier** | Double-check | Fast gpt-5.2 (medium reasoning) |
+| **Tutor** | Adaptive teaching | Persona-based prompts |
+| **Finalizer** | Median of last 3 | Deterministic stabilization |
 
 ---
 
 ## 🚀 CLI Usage
 
 ```bash
-# Standard run (all students in dev set)
-python -m src.main --set-type dev
+# Parallel processing (5 students at once)
+python -m src.main --set-type mini_dev --parallel 5 --submit
 
-# Debug a specific student with more turns
+# Debug single student
 python -m src.main --student-id <UUID> --turns 12
 
-# Limit total conversations (for quick testing)
+# Limit total conversations
 python -m src.main --max-convos 3
 
-# Submit final predictions to leaderboard
-python -m src.main --submit
+# Analyze submission history
+python scripts/analyze_submissions.py
+```
+
+### Key Flags
+| Flag | Description |
+|------|-------------|
+| `--parallel N` | Run N students concurrently |
+| `--submit` | Submit predictions + log history |
+| `--max-convos N` | Limit to N conversations |
+| `--turns N` | Messages per session |
+| `--set-type` | `mini_dev` / `dev` / `eval` |
+
+---
+
+## ⚙️ Configuration
+
+Edit `.env`:
+```bash
+OPENAI_API_KEY=sk-...
+KNOWUNITY_X_API_KEY=sk_team_...
+SET_TYPE=mini_dev
 ```
 
 ---
 
 ## 📂 Project Structure
 
-```bash
+```
 ├── src/
-│   ├── main.py          # Orchestrator & State Machine
-│   ├── models.py        # Pydantic models (DiagnosticEvent, StudentState)
-│   ├── prompts.py       # Agent prompts (Opener, Detective, Tutor)
-│   ├── config.py        # Config management (pydantic-settings)
+│   ├── main.py          # Orchestrator (parallel + feedback loop)
+│   ├── models.py        # Pydantic models
+│   ├── prompts.py       # GPT-5.2 optimized prompts
 │   └── services/
 │       ├── llm.py       # LLM agents + Verifier
-│       ├── knowunity.py # API client for K12 Student simulation
-│       └── database.py  # State persistence (JSON)
+│       ├── knowunity.py # API client
+│       └── database.py  # Per-student state files
 ├── data/
-│   ├── state.json       # Turn-by-turn diagnostic events
-│   └── predictions.json # Final output for submission
+│   ├── state_{id}.json  # Per-student state (parallel-safe)
+│   ├── predictions.json # Final predictions
+│   └── submission_history.json  # MSE tracking
+├── scripts/
+│   └── analyze_submissions.py   # MSE trend analysis
 └── docs/
-    ├── AGENTS.md        # Detailed agent documentation
-    ├── STRATEGY.md      # MSE-reducing signal processing
-    └── ARCHITECTURE.md  # System design & flow
+    ├── AGENTS.md        # Agent documentation
+    ├── STRATEGY.md      # MSE-reducing strategies
+    └── ARCHITECTURE.md  # System design
 ```
 
 ---
@@ -98,6 +102,17 @@ python -m src.main --submit
 
 | Document | Description |
 |----------|-------------|
-| [AGENTS.md](./docs/AGENTS.md) | All 5 agents, their purpose, and when they are called |
-| [STRATEGY.md](./docs/STRATEGY.md) | MSE-reducing signal processing & calibration |
-| [ARCHITECTURE.md](./docs/ARCHITECTURE.md) | System design, sequence diagrams, technical stack |
+| [AGENTS.md](./docs/AGENTS.md) | All 5 agents and their GPT-5.2 prompts |
+| [STRATEGY.md](./docs/STRATEGY.md) | MSE-reducing signal processing |
+| [ARCHITECTURE.md](./docs/ARCHITECTURE.md) | System design & flow |
+
+---
+
+## 🎯 MSE-Reducing Features
+
+1. **Asymmetric Updates** - 2 votes for promotion, strong evidence for demotion
+2. **Confidence Smoothing** - Max +0.15/turn
+3. **Verifier** - Ambiguity zone (0.50-0.65) double-check
+4. **Early Exit** - Skip diagnosis when confidence ≥0.85 + 3 events
+5. **Deterministic Finalizer** - Median of last 3 events
+6. **GPT-5.2 Calibration** - `<calibration_rules>` + `<self_check>`

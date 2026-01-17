@@ -241,7 +241,9 @@ def main():
     if args.max_convos > 0:
         tasks = tasks[:args.max_convos]
     
-    log.info(f"Processing {len(tasks)} conversations (parallel={args.parallel})")
+    # Cap parallelism to number of tasks (avoid idle workers)
+    actual_parallel = min(args.parallel, len(tasks))
+    log.info(f"Processing {len(tasks)} conversations (parallel={actual_parallel})")
     
     # Process conversations
     if args.parallel > 1:
@@ -269,7 +271,7 @@ def main():
                 }
         
         # Use ThreadPoolExecutor for parallel processing
-        with concurrent.futures.ThreadPoolExecutor(max_workers=args.parallel) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=actual_parallel) as executor:
             predictions = list(executor.map(process_task, tasks))
     else:
         # Sequential processing (original behavior)
@@ -302,7 +304,37 @@ def main():
     # Optional: submit
     if args.submit:
         result = api.submit_predictions(predictions, args.set_type)
-        log.info(f"MSE Score: {result.get('mse_score')}")
+        mse = result.get('mse_score')
+        log.info(f"MSE Score: {mse}")
+        
+        # ========== FEEDBACK LOOP: Log submission history ==========
+        from datetime import datetime
+        history_path = Path("data/submission_history.json")
+        
+        # Load existing history
+        if history_path.exists():
+            history = json.loads(history_path.read_text())
+        else:
+            history = {"submissions": []}
+        
+        # Append new submission
+        history["submissions"].append({
+            "timestamp": datetime.now().isoformat(),
+            "set_type": args.set_type,
+            "mse_score": mse,
+            "num_predictions": len(predictions),
+            "predictions": predictions,
+            "config": {
+                "turns": args.turns,
+                "parallel": args.parallel,
+                "confidence_threshold": 0.75,
+                "shot_clock": 6,
+                "early_exit_threshold": 0.85
+            }
+        })
+        
+        history_path.write_text(json.dumps(history, indent=2))
+        log.info(f"Logged submission #{len(history['submissions'])} to submission_history.json")
     
     return predictions
 
