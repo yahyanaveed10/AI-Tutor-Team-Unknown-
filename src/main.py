@@ -220,7 +220,7 @@ def main():
     
     llm = LLMService()
     api = KnowunityClient()
-    db = DatabaseService()
+    db = DatabaseService(set_type=args.set_type)
     
     # Get students
     students = api.list_students(args.set_type)
