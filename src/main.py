@@ -80,18 +80,47 @@ def run_conversation(
             # DIAGNOSIS PHASE
             analysis = llm.analyze(state, student_msg)
             
-            # Deterministic confidence smoothing: max +0.2 per turn
-            raw_conf = analysis.confidence
-            smoothed_conf = min(state.confidence + 0.2, raw_conf)
-            smoothed_conf = round(min(0.95, smoothed_conf), 2)
+            # ========== EVIDENCE-BASED LEVEL CALCULATION ==========
+            # Use LLM as feature extractor, not judge
+            old_level = state.estimated_level
+            llm_level = analysis.estimated_level
             
-            state.estimated_level = analysis.estimated_level
+            # Calculate evidence signal
+            signal = (
+                1.0 * (1 if analysis.is_correct else 0) +
+                0.5 * (1 if analysis.reasoning_score >= 4 else 0) -
+                0.8 * (1 if analysis.misconception else 0)
+            )
+            
+            # Asymmetric level updates
+            if llm_level > old_level:
+                # Promotion: require 2 consecutive votes
+                state.promo_votes += 1
+                if state.promo_votes >= 2:
+                    state.estimated_level = min(old_level + 1, 5)
+                    state.promo_votes = 0
+                    log.info(f"    → Promoted to Level {state.estimated_level} (2 votes)")
+            elif llm_level < old_level:
+                # Demotion: require strong evidence (wrong + low reasoning)
+                if not analysis.is_correct and analysis.reasoning_score <= 2:
+                    state.estimated_level = max(old_level - 1, 1)
+                    state.promo_votes = 0
+                    log.info(f"    → Demoted to Level {state.estimated_level} (strong evidence)")
+            else:
+                # Same level: reset promo votes if consistent
+                state.promo_votes = 0
+            
+            # ========== CONFIDENCE SMOOTHING (timing only) ==========
+            raw_conf = analysis.confidence
+            smoothed_conf = min(state.confidence + 0.15, raw_conf)  # slower increase
+            smoothed_conf = round(min(0.95, smoothed_conf), 2)
             state.confidence = smoothed_conf
+            
             if analysis.misconception:
                 state.misconceptions.append(analysis.misconception)
             
             tutor_msg = analysis.next_message
-            log.info(f"[DIAGNOSIS Turn {state.turn_count}] Level={analysis.estimated_level} Conf={smoothed_conf:.2f} (raw={raw_conf:.2f})")
+            log.info(f"[DIAGNOSIS Turn {state.turn_count}] Level={state.estimated_level} Conf={smoothed_conf:.2f} (LLM={llm_level}, signal={signal:.1f})")
             
             # Level freezing: once confident, lock it
             if state.confidence >= 0.75:

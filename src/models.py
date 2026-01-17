@@ -29,3 +29,5 @@ class StudentState(BaseModel):
     confidence: float = 0.0
     history: List[Message] = []
     misconceptions: List[str] = []
+    promo_votes: int = 0  # Asymmetric: require 2 votes to promote
+
