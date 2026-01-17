@@ -1,153 +1,151 @@
 # The Strategy: "The Peer-Reviewed Detective"
 
-> Our system implements a Bayesian-inspired Knowledge Tracing approach disguised as a tutor.
+> Bayesian-inspired Knowledge Tracing + GPT-5.2 prompt patterns for optimal MSE.
 
 ---
 
 ## 🎯 Core Philosophy
 
-We don't just ask random questions. We strategically probe the student's knowledge using **information-maximizing questions** that reveal their true understanding level as quickly as possible.
+We use **discriminative trap questions** and **calibrated confidence** to infer student level with minimal turns.
 
 ---
 
 ## 📊 The Conversation Flow
-
-Our state machine manages three distinct phases to ensure both accurate diagnosis and quality tutoring.
 
 ```mermaid
 graph TD
     Start((Start)) --> Opener[Turn 0: Opener]
     Opener --> StudentResponse1[Student Response]
     
-    subgraph "Diagnosis Phase (Detective + Verifier)"
-    Diagnosis{Confidence < 0.75 AND Turn < 6?}
-    Analyze[Detective: Extract Evidence]
-    Verify{Ambiguity Zone?}
-    Verifier[Verifier: Double-Check Correctness]
+    subgraph "Diagnosis Phase"
+    Diagnosis{Conf < 0.75 AND Turn < 6?}
+    Analyze[Detective: Calibrated Analysis]
+    EarlyExit{Conf ≥0.85 + 3 events?}
     Asymmetric[Asymmetric Level Update]
-    LogEvent[Log DiagnosticEvent]
     NextDiag[Next Diagnostic Question]
     end
     
-    subgraph "Tutoring Phase (Adaptive Persona)"
+    subgraph "Tutoring Phase"
     Freeze[Level Frozen]
-    Tutor[Tutor: Coach/Professor/Colleague]
+    Tutor[Adaptive Persona]
     end
     
-    subgraph "End of Session"
-    Finalizer[Deterministic Finalizer: Median of Last 3]
-    Submit[Submit Prediction]
+    subgraph "End"
+    Finalizer[Median of Last 3]
+    Submit[Submit]
     end
     
     StudentResponse1 --> Diagnosis
     Diagnosis -- "Yes" --> Analyze
-    Analyze --> Verify
-    Verify -- "0.55-0.75" --> Verifier
-    Verify -- "No" --> Asymmetric
-    Verifier --> Asymmetric
-    Asymmetric --> LogEvent
-    LogEvent --> NextDiag
-    NextDiag --> StudentMsg[Student Response]
-    StudentMsg --> Diagnosis
+    Analyze --> EarlyExit
+    EarlyExit -- "Yes" --> Freeze
+    EarlyExit -- "No" --> Asymmetric
+    Asymmetric --> NextDiag
+    NextDiag --> Diagnosis
     
     Diagnosis -- "No" --> Freeze
     Freeze --> Tutor
     Tutor --> Finalizer
     Finalizer --> Submit
-    
-    style Opener fill:#f9f,stroke:#333,stroke-width:2px
-    style Verifier fill:#ffa500,stroke:#333,stroke-width:2px
-    style Finalizer fill:#00ff00,stroke:#333,stroke-width:2px
 ```
 
 ---
 
-## Phase 1: Diagnosis (Turns 0-5)
+## 🧠 GPT-5.2 Prompt Patterns
 
-### Turn 0: The Opener
-- Ask a **"Conceptual Trap Question"** - designed to distinguish surface knowledge from deep understanding.
-- **Output Spec**: A single question (1-2 sentences max) that reveals misconceptions.
+### OPENER: `<discriminative_power>`
+```xml
+<discriminative_power>
+- Level 1 should reveal specific misconception
+- Level 3 should get it right with basic reasoning
+- Level 5 should give deeper insight
+</discriminative_power>
+```
 
-### Turns 1-5: The Detective
-Each turn, the **GPT-5.2-pro** model analyzes the response:
-1. **Focus**: Primarily on the most recent response.
-2. **Context**: Use history only to detect consistency or contradiction.
-3. **Structured Output**: JSON format for `is_correct`, `reasoning_score`, `misconception`, `estimated_level`, and `confidence`.
+### DETECTIVE: `<calibration_rules>` + `<self_check>`
+```xml
+<calibration_rules>
+- 0.9+: Bet your reputation
+- 0.6-0.8: Could be off by 1 level
+- <0.6: Multiple interpretations
+</calibration_rules>
+
+<self_check>
+- Did I anchor on MOST RECENT response?
+- Is my confidence calibrated?
+</self_check>
+```
 
 ---
 
-## 🧠 MSE-Reducing Signal Processing
-
-We implement **5 layers** of statistical calibration to reduce MSE:
+## 📈 MSE-Reducing Layers
 
 ### 1. Asymmetric Level Updates
-LLM is a **feature extractor**, Controller makes the decision:
 ```python
-# Promotion: Require 2 consecutive votes
+# Promotion: 2 consecutive votes
 if llm_level > old_level:
     promo_votes += 1
-    if promo_votes >= 2:
-        level += 1
+    if promo_votes >= 2: level += 1
 
-# Demotion: Require strong evidence
+# Demotion: Strong evidence only
 if llm_level < old_level:
     if not is_correct and reasoning_score <= 2:
         level -= 1
 ```
 
-### 2. Confidence Smoothing
-Prevents spikes and regressions:
+### 2. First-2 Baseline
+Average of turns 1-2 sets baseline, then asymmetric rules apply.
+
+### 3. Confidence Smoothing
 ```python
-smoothed_conf = min(prev_confidence + 0.15, raw_confidence)
+smoothed_conf = min(prev_conf + 0.15, raw_conf)
 ```
 
-### 3. The Verifier (Ambiguity Zone)
-Runs **only when 0.55 ≤ confidence ≤ 0.75**. If it disagrees with Detective on correctness, trust the Verifier.
-
-### 4. Diagnostic Event Logging
-Every diagnosis turn logs structured evidence:
+### 4. Early Exit Optimization
 ```python
-DiagnosticEvent(turn, is_correct, reasoning_score, llm_level, computed_level, confidence)
+if conf >= 0.85 and is_correct and reasoning >= 4 and events >= 3:
+    freeze_level()  # Skip remaining diagnosis
 ```
 
-### 5. Deterministic Finalizer
-At end of session, compute **median of last 3 events** to prevent "last-turn swing":
+### 5. Verifier (Ambiguity Zone)
+Runs only when 0.50 ≤ confidence ≤ 0.65. Uses fast gpt-5.2 model.
+
+### 6. Deterministic Finalizer
 ```python
-if switch_reason == "shot_clock" or confidence < 0.75:
-    final_level = median(last_3_computed_levels)
+if uncertain: final_level = median(last_3_computed_levels)
 ```
 
 ---
 
-## Phase 2: Tutoring (Turn 6+ OR Confidence >= 0.75)
+## 🎭 Adaptive Tutoring Personas
 
-Once the level is frozen, we switch to an **Adaptive Persona**.
-
-### Official Understanding Levels
-| Level | Official Meaning | Persona Type |
-|---|---|---|
-| 1 | Struggling | **The Coach** (Warm, encourages, simple examples) |
-| 2 | Below grade | **The Coach** (Scaffolding, builds confidence) |
-| 3 | At grade | **The Professor** (Socratic, "What if?" questions) |
-| 4 | Above grade | **The Professor** (Challenging, practical apps) |
-| 5 | Advanced | **The Colleague** (Nuanced, edge cases, peers) |
+| Level | Persona | Style |
+|-------|---------|-------|
+| 1-2 | **Coach** | Warm, simple examples, builds confidence |
+| 3-4 | **Professor** | Socratic "what if?" questions |
+| 5 | **Colleague** | Edge cases, nuanced discussion |
 
 ---
 
-## 🎯 Scoring Stability Features
+## ⚡ Parallel Processing
+
+```bash
+python -m src.main --parallel 5 --submit
+```
+
+- Uses `ThreadPoolExecutor` for concurrent students
+- Auto-caps workers to number of tasks
+- Per-student state files prevent conflicts
+- Submission history logged for trend analysis
+
+---
+
+## 📊 Scoring Stability
 
 | Feature | Logic | Benefit |
 |---------|-------|---------|
-| **Asymmetric Updates** | 2 votes for promotion | Prevents single-turn jumps |
-| **Confidence Smoothing** | `max +0.15 / turn` | Slower, more stable transitions |
-| **Verifier** | Ambiguity zone only | Reduces correctness noise |
-| **Shot Clock (Turn 6)** | Mandatory switch | Guarantees tutoring score |
-| **Deterministic Finalizer** | Median of last 3 | Prevents last-turn swing |
-
----
-
-## 📊 Expected Outcomes
-
-- **MSE < 0.5**: Multi-layer calibration reduces variance.
-- **Tutoring Score > 8**: Persona-aligned adaptive teaching.
-- **Robustness**: 100% completion rate via fail-safe shot-clock + finalizer.
+| Asymmetric Updates | 2 votes for +1 | No single-turn jumps |
+| Confidence Smoothing | +0.15/turn max | Stable transitions |
+| Early Exit | ≥0.85 + 3 events | Faster + more tutoring |
+| Shot Clock (T6) | Mandatory switch | Guarantees tutoring |
+| Finalizer | Median of 3 | No last-turn swing |

@@ -1,168 +1,204 @@
-# AI Tutor Agents & Pipeline
+# AI Tutor Agents
 
-> A detailed breakdown of every agent in our system, their purpose, and when they are called.
+> All 5 agents, their GPT-5.2 patterns, and when they're called.
 
 ---
 
-## 🏗️ System Overview
-
-Our system is a **Multi-Agent Orchestration** pattern where the Python Controller (`main.py`) acts as the "brain" that decides which LLM agent to invoke based on the current state.
+## 🏗️ Agent Overview
 
 ```mermaid
-sequenceDiagram
-    participant S as Student (API)
-    participant C as Controller (main.py)
-    participant O as Opener Agent
-    participant D as Detective Agent
-    participant V as Verifier Agent
-    participant T as Tutor Agent
-    participant F as Finalizer (Python)
-
-    Note over C: Turn 0
-    C->>O: generate_opener(topic)
-    O-->>C: "Trap Question"
-    C->>S: Send question
-    
-    loop Diagnosis (Turns 1-5)
-        S-->>C: Student Response
-        C->>D: analyze(state, response)
-        alt Ambiguity Zone (0.55-0.75 conf)
-            C->>V: verify_correctness(topic, response)
-            V-->>C: true/false
-        end
-        D-->>C: {level, confidence, misconception, next_msg}
-        C->>C: Asymmetric Level Update
-        C->>S: Send diagnostic question
+graph LR
+    subgraph "Turn 0"
+        O[🎯 Opener]
     end
     
-    Note over C: Confidence >= 0.75 OR Shot Clock
-    
-    loop Tutoring (Turns 6+)
-        S-->>C: Student Response
-        C->>T: tutor(state, response)
-        T-->>C: Pedagogical message
-        C->>S: Send tutoring content
+    subgraph "Turns 1-5 (Diagnosis)"
+        D[🔍 Detective]
+        V[✅ Verifier]
     end
     
-    C->>F: Compute median of last 3 events
-    F-->>C: Final Level
+    subgraph "Turns 6+ (Tutoring)"
+        T1[🧑‍🏫 Coach L1-2]
+        T2[🎓 Professor L3-4]
+        T3[🤝 Colleague L5]
+    end
+    
+    subgraph "End"
+        F[📊 Finalizer]
+    end
+    
+    O --> D
+    D -->|"Ambiguity 0.50-0.65"| V
+    V --> D
+    D -->|"Frozen"| T1
+    D -->|"Frozen"| T2
+    D -->|"Frozen"| T3
+    T1 --> F
+    T2 --> F
+    T3 --> F
 ```
 
 ---
 
-## 🤖 Agent 1: The Opener
+## 🎯 Agent 1: Opener
 
 | Property | Value |
 |----------|-------|
-| **File** | `prompts.py` → `OPENER` |
-| **When Called** | Turn 0 only |
-| **Purpose** | Deploy a "Conceptual Trap" question |
-| **Reasoning Effort** | High |
+| **Prompt** | `prompts.py` → `OPENER` |
+| **When** | Turn 0 only |
+| **Model** | gpt-5.2-pro (high reasoning) |
+| **GPT-5.2 Pattern** | `<discriminative_power>` |
 
-### What It Does
-Instead of saying "Hello, I'm your tutor," the Opener immediately asks a diagnostic question designed to reveal common misconceptions for that specific topic.
+### Purpose
+Deploy a "Conceptual Trap" question that separates skill levels.
 
-### Example Output
-> "A line passes through the points (2, 5) and (2, −1). Someone says, 'The slope is 0.' Do you agree?"
+### Key Pattern
+```xml
+<discriminative_power>
+- Level 1 should reveal specific misconception
+- Level 3 should get it right with basic reasoning
+- Level 5 should give deeper insight
+</discriminative_power>
+```
 
 ---
 
-## 🔍 Agent 2: The Detective
+## 🔍 Agent 2: Detective
 
 | Property | Value |
 |----------|-------|
-| **File** | `prompts.py` → `DETECTIVE` |
-| **When Called** | Turns 1-5, while `confidence < 0.75` |
-| **Purpose** | Analyze student response, extract evidence |
-| **Reasoning Effort** | High |
-| **Output** | Structured JSON (not student-facing text) |
+| **Prompt** | `prompts.py` → `DETECTIVE` |
+| **When** | Turns 1-5, while `confidence < 0.75` |
+| **Model** | gpt-5.2-pro (high reasoning) |
+| **GPT-5.2 Patterns** | `<calibration_rules>`, `<self_check>`, `<next_message_rules>` |
 
-### What It Does
-Evaluates the student's response for:
-- **Correctness**: Is the answer factually correct?
-- **Reasoning Score**: Quality of explanation (1-5)
-- **Misconception**: Any concrete incorrect belief
-- **Estimated Level**: LLM's guess at student level (1-5)
-- **Confidence**: Certainty in the estimate
+### Purpose
+Analyze student response, extract evidence, output structured JSON.
 
-### Key Design
-The Detective is a **feature extractor**, not a judge. The Controller uses asymmetric rules to decide the actual level:
-- **Promotion**: Requires 2 consecutive "promote" votes
-- **Demotion**: Requires strong evidence (wrong + reasoning ≤ 2)
+### Key Patterns
+```xml
+<calibration_rules>
+- 0.9+: Bet your reputation
+- 0.6-0.8: Could be off by 1 level
+- <0.6: Multiple interpretations
+</calibration_rules>
+
+<next_message_rules>
+- Level 1-2: "Can you walk me through that?"
+- Level 3: "What if we changed X to Y?"
+- Level 4-5: "Does this still hold when Z?"
+</next_message_rules>
+```
 
 ---
 
-## ✅ Agent 3: The Verifier
+## ✅ Agent 3: Verifier
 
 | Property | Value |
 |----------|-------|
-| **File** | `llm.py` → `verify_correctness()` |
-| **When Called** | Only in Ambiguity Zone (0.55-0.75 confidence) |
-| **Purpose** | Double-check factual correctness |
-| **Reasoning Effort** | Low (fast check) |
+| **Code** | `llm.py` → `verify_correctness()` |
+| **When** | Ambiguity zone (0.50-0.65 confidence) |
+| **Model** | gpt-5.2 (medium reasoning) - FAST |
 | **Output** | `true` or `false` |
 
-### What It Does
-A lightweight second opinion on whether the student's answer is factually correct. If it disagrees with the Detective, the Verifier's judgment is trusted.
-
-### Why It Exists
-LLMs can be "noisy" in ambiguous cases. The Verifier reduces variance without adding latency to clear-cut cases.
+### Purpose
+Lightweight double-check on factual correctness. If disagreement with Detective, trust Verifier.
 
 ---
 
-## 🎓 Agent 4: The Tutor (3 Personas)
-
-| Property | Value |
-|----------|-------|
-| **File** | `prompts.py` → `TUTOR_COACH`, `TUTOR_PROFESSOR`, `TUTOR_COLLEAGUE` |
-| **When Called** | After level is frozen (confidence ≥ 0.75 or Shot Clock) |
-| **Purpose** | Teach adaptively based on diagnosed level |
-| **Reasoning Effort** | Medium |
-
-### Personas by Level
+## 🎓 Agent 4: Tutor (3 Personas)
 
 | Level | Persona | Style |
 |-------|---------|-------|
-| 1-2 | **The Coach** | Warm, encouraging, simple examples, builds confidence |
-| 3-4 | **The Professor** | Socratic, conceptual challenges, "What if?" questions |
-| 5 | **The Colleague** | Peer-to-peer, edge cases, nuanced discussion |
+| 1-2 | **Coach** | Warm, simple examples, builds confidence |
+| 3-4 | **Professor** | Socratic "what if?" questions |
+| 5 | **Colleague** | Edge cases, peer-level discussion |
+
+### Common Pattern
+```xml
+<output_verbosity>
+- 2-4 sentences max
+- No preambles ("Great question!")
+- Get straight to teaching
+</output_verbosity>
+```
 
 ---
 
-## 🧮 Agent 5: The Finalizer (Deterministic)
+## 📊 Agent 5: Finalizer (Deterministic)
 
 | Property | Value |
 |----------|-------|
-| **File** | `main.py` (pure Python, no LLM) |
-| **When Called** | End of session |
-| **Purpose** | Stabilize the final level prediction |
+| **Code** | `main.py` (pure Python, no LLM) |
+| **When** | End of session |
 | **Latency** | 0ms |
 
-### What It Does
-Computes the **median of the last 3 diagnostic events** to prevent "last-turn swing" from ruining MSE.
+### Purpose
+Compute **median of last 3 diagnostic events** to prevent last-turn swing.
 
-### When It Adjusts
-- If `switch_reason == "shot_clock"` (ambiguous case)
-- If `confidence < 0.75` at end of session
+```python
+if len(events) >= 3:
+    final_level = median([e.computed_level for e in events[-3:]])
+```
 
 ---
 
-## 📊 State Management
+## 📈 Agent Invocation Flow
 
-All evidence is logged in `StudentState.diagnostic_events[]`:
+```mermaid
+sequenceDiagram
+    participant S as Student
+    participant C as Controller
+    participant O as Opener
+    participant D as Detective
+    participant V as Verifier
+    participant T as Tutor
+    participant F as Finalizer
+
+    C->>O: generate_opener(topic)
+    O-->>C: Trap question
+    C->>S: Send question
+    
+    loop Diagnosis (Turns 1-5)
+        S-->>C: Response
+        C->>D: analyze(state, response)
+        alt Ambiguity Zone
+            C->>V: verify_correctness()
+            V-->>C: true/false
+        end
+        D-->>C: {level, confidence, next_msg}
+        alt Early Exit (conf ≥0.85 + 3 events)
+            C->>C: Freeze level
+        end
+        C->>S: Diagnostic question
+    end
+    
+    loop Tutoring (Level Frozen)
+        S-->>C: Response
+        C->>T: tutor(persona, response)
+        T-->>C: Teaching message
+        C->>S: Tutoring content
+    end
+    
+    C->>F: median(last_3_events)
+    F-->>C: Final level
+```
+
+---
+
+## 🧠 State Tracking
 
 ```python
 class DiagnosticEvent(BaseModel):
     turn: int
     is_correct: bool
-    reasoning_score: int  # 1-5
-    misconception: Optional[str]
-    llm_level: int        # What LLM suggested
-    computed_level: int   # What we actually set
+    reasoning_score: int    # 1-5
+    llm_level: int          # LLM's estimate
+    computed_level: int     # Actual level after rules
     confidence: float
 ```
 
-This enables:
-- Post-hoc analysis of diagnosis quality
+Enables:
 - Deterministic finalizer computation
-- Clean data for future model training
+- Post-hoc analysis
+- Submission history tracking
