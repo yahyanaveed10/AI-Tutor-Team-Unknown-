@@ -1,8 +1,11 @@
 """Tests for UI helper utilities."""
 
-import json
-
-from src.ui_utils import load_agent_traces, parse_agent_trace, update_agent_traces
+from src.ui_utils import (
+    condense_trace_timeline,
+    extract_diagnosis_metrics,
+    find_switch_event,
+    parse_agent_trace,
+)
 
 
 def test_parse_agent_trace_extracts_agents_and_topic():
@@ -27,22 +30,44 @@ def test_parse_agent_trace_extracts_agents_and_topic():
     assert trace[4]["agent"] == "Tutor"
 
 
-def test_load_agent_traces_missing_returns_empty(tmp_path):
-    path = tmp_path / "agent_traces.json"
+def test_condense_trace_timeline_dedupes_consecutive_agents():
+    trace = [
+        {"agent": "Opener", "detail": "Q", "topic": "Algebra"},
+        {"agent": "Detective", "detail": "Level=3 Conf=0.4", "topic": "Algebra"},
+        {"agent": "Detective", "detail": "Level=3 Conf=0.5", "topic": "Algebra"},
+        {"agent": "Shot Clock", "detail": "Forced switch", "topic": "Algebra"},
+        {"agent": "Tutor", "detail": "Teaching", "topic": "Algebra"},
+    ]
 
-    assert load_agent_traces(path) == {}
+    assert condense_trace_timeline(trace) == [
+        "Opener",
+        "Detective",
+        "Shot Clock",
+        "Tutor",
+    ]
 
 
-def test_update_agent_traces_writes_and_merges(tmp_path):
-    path = tmp_path / "agent_traces.json"
-    trace_a = [{"agent": "Opener", "detail": "Hello", "topic": "Algebra"}]
-    trace_b = [{"agent": "Tutor", "detail": "Explain", "topic": "Geometry"}]
+def test_extract_diagnosis_metrics_parses_level_and_confidence():
+    trace = [
+        {"agent": "Detective", "detail": "Level=2 Conf=0.35 (LLM=2)", "topic": "X"},
+        {"agent": "Tutor", "detail": "Teaching at Level 2", "topic": "X"},
+        {"agent": "Detective", "detail": "Level=3 Conf=0.55 (LLM=3)", "topic": "X"},
+    ]
 
-    update_agent_traces(path, "student-a", trace_a)
-    data = json.loads(path.read_text())
-    assert data["student-a"] == trace_a
+    metrics = extract_diagnosis_metrics(trace)
 
-    update_agent_traces(path, "student-b", trace_b)
-    data = json.loads(path.read_text())
-    assert data["student-a"] == trace_a
-    assert data["student-b"] == trace_b
+    assert metrics == [
+        {"turn": 1.0, "level": 2.0, "confidence": 0.35},
+        {"turn": 2.0, "level": 3.0, "confidence": 0.55},
+    ]
+
+
+def test_find_switch_event_prefers_confidence_gate():
+    trace = [
+        {"agent": "Shot Clock", "detail": "Forced switch", "topic": "X"},
+        {"agent": "Confidence Gate", "detail": "Frozen at 0.75", "topic": "X"},
+    ]
+
+    event = find_switch_event(trace)
+
+    assert event == {"agent": "Confidence Gate", "detail": "Frozen at 0.75", "topic": "X"}

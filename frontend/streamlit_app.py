@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
+import altair as alt
 import httpx
 import streamlit as st
 
@@ -16,10 +17,16 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from src.ui_utils import load_agent_traces, parse_agent_trace, update_agent_traces
+from src.services.trace_store import TraceStore
+from src.ui_utils import (
+    condense_trace_timeline,
+    extract_diagnosis_metrics,
+    find_switch_event,
+)
 
 DATA_PATH = ROOT_DIR / "data" / "state.json"
 AGENT_TRACE_PATH = ROOT_DIR / "data" / "agent_traces.json"
+TRACE_STORE = TraceStore(AGENT_TRACE_PATH)
 DEFAULT_BASE_URL = "https://knowunity-agent-olympics-2026-api.vercel.app"
 DEFAULT_DEV_STUDENTS = [
     {
@@ -52,13 +59,7 @@ def init_state() -> None:
 
 def hydrate_agent_traces() -> None:
     """Load persisted agent traces into session state."""
-    persisted = load_agent_traces(AGENT_TRACE_PATH)
-    if not persisted:
-        return
-    current = st.session_state.get("agent_traces", {})
-    for student_id, trace in persisted.items():
-        current.setdefault(student_id, trace)
-    st.session_state["agent_traces"] = current
+    st.session_state["agent_traces"] = TRACE_STORE.load()
 
 
 def extract_run_event(line: str) -> str | None:
@@ -275,13 +276,18 @@ with st.sidebar:
             language="bash",
         )
     run_clicked = st.button("Run AI", disabled=not selected_student_id)
+    pitch_mode = st.toggle(
+        "Pitch mode",
+        value=False,
+        help="Show a storyboard view for demoing the agent behavior.",
+    )
 
 
 left, right = st.columns([2, 1], gap="large")
 
 with left:
     run_status_slot = st.empty()
-    chat_container = st.empty()
+    main_container = st.empty()
     if selected_student_id:
         run_state = st.session_state.get("run_state", {}).get(selected_student_id)
         if run_state == "running":
@@ -291,12 +297,17 @@ with left:
         elif run_state and run_state.startswith("error"):
             run_status_slot.error(run_state)
 
-def render_chat_view() -> list[dict[str, Any]]:
+
+def load_entries_for_selected_student() -> list[dict[str, Any]]:
+    """Load stored chat entries for the selected student."""
     state_data = load_state()
-    entries: list[dict[str, Any]] = []
     if selected_student_id:
-        entries = get_student_entries(state_data, selected_student_id)
-    with chat_container.container():
+        return get_student_entries(state_data, selected_student_id)
+    return []
+
+
+def render_chat_view(entries: list[dict[str, Any]]) -> None:
+    with main_container.container():
         st.subheader("Chat history")
         if not selected_student_id:
             st.info("Select a dev student to view their chat history.")
@@ -332,7 +343,116 @@ def render_chat_view() -> list[dict[str, Any]]:
                             display_role = "assistant"
                         with st.chat_message(display_role):
                             st.markdown(message.get("content", ""))
-    return entries
+    return None
+
+
+def render_pitch_view(
+    entries: list[dict[str, Any]],
+    trace: list[dict[str, str]],
+) -> None:
+    with main_container.container():
+        st.subheader("Pitch mode")
+        st.caption("Storyboard of the agent's decision flow and adaptive tutoring.")
+        if not selected_student_id:
+            st.info("Select a dev student to generate a pitch view.")
+            return
+        if not entries:
+            st.info("Run the tutor to generate a pitch view.")
+            return
+        topic_choices = [entry.get("topic_name", "Topic") for entry in entries]
+        topic_choice = st.selectbox("Spotlight topic", topic_choices)
+        entry = next(
+            (item for item in entries if item.get("topic_name") == topic_choice), None
+        )
+        if not entry:
+            st.info("No data available for that topic yet.")
+            return
+        topic_trace = [event for event in trace if event.get("topic") == topic_choice]
+        timeline = condense_trace_timeline(topic_trace)
+        metrics = extract_diagnosis_metrics(topic_trace)
+        switch_event = find_switch_event(topic_trace)
+
+        st.markdown("**Decision timeline**")
+        if timeline:
+            st.markdown(" → ".join(timeline))
+        else:
+            st.caption("No agent timeline available yet.")
+
+        if metrics:
+            confidence_series = [
+                {"turn": item["turn"], "value": round(item["confidence"] * 100, 1)}
+                for item in metrics
+            ]
+            level_series = [
+                {"turn": item["turn"], "value": item["level"]} for item in metrics
+            ]
+            confidence_chart = (
+                alt.Chart(alt.Data(values=confidence_series))
+                .mark_line(point=True)
+                .encode(
+                    x=alt.X(
+                        "turn:Q",
+                        title="Diagnosis turn",
+                        axis=alt.Axis(tickMinStep=1),
+                    ),
+                    y=alt.Y(
+                        "value:Q",
+                        title="Confidence (%)",
+                        scale=alt.Scale(domain=[0, 100]),
+                    ),
+                )
+                .properties(height=180)
+            )
+            level_chart = (
+                alt.Chart(alt.Data(values=level_series))
+                .mark_line(point=True)
+                .encode(
+                    x=alt.X(
+                        "turn:Q",
+                        title="Diagnosis turn",
+                        axis=alt.Axis(tickMinStep=1),
+                    ),
+                    y=alt.Y(
+                        "value:Q",
+                        title="Level",
+                        scale=alt.Scale(domain=[1, 5]),
+                    ),
+                )
+                .properties(height=180)
+            )
+            st.altair_chart(confidence_chart, use_container_width=True)
+            st.altair_chart(level_chart, use_container_width=True)
+        else:
+            st.caption("No diagnosis metrics available yet.")
+
+        summary_cols = st.columns(2)
+        with summary_cols[0]:
+            st.metric("Final level", entry.get("estimated_level", "—"))
+        with summary_cols[1]:
+            st.metric("Confidence", entry.get("confidence", "—"))
+
+        st.markdown("**Why it switched**")
+        if switch_event:
+            st.info(f"{switch_event['agent']}: {switch_event['detail']}")
+        else:
+            st.info("No switch signal recorded yet.")
+
+        history = entry.get("history", [])
+        opener = next(
+            (message.get("content", "") for message in history if message.get("role") == "tutor"),
+            "",
+        )
+        last_tutor = next(
+            (message.get("content", "") for message in reversed(history) if message.get("role") == "tutor"),
+            "",
+        )
+        snippet_cols = st.columns(2)
+        with snippet_cols[0]:
+            st.markdown("**Trap question**")
+            st.write(opener or "Not available yet.")
+        with snippet_cols[1]:
+            st.markdown("**Adaptive tutoring**")
+            st.write(last_tutor or "Not available yet.")
 
 
 if run_clicked and selected_student_id:
@@ -340,8 +460,17 @@ if run_clicked and selected_student_id:
     st.session_state["run_events"][selected_student_id] = []
     run_status_slot.info("⏳ Tutor run in progress...")
 
-    def refresh_chat() -> None:
-        render_chat_view()
+    def refresh_view() -> None:
+        entries = load_entries_for_selected_student()
+        current_trace = (
+            st.session_state.get("agent_traces", {}).get(selected_student_id, [])
+            if selected_student_id
+            else []
+        )
+        if pitch_mode:
+            render_pitch_view(entries, current_trace)
+        else:
+            render_chat_view(entries)
 
     try:
         with st.spinner("Running tutor in Docker..."):
@@ -349,31 +478,40 @@ if run_clicked and selected_student_id:
                 selected_student_id,
                 run_status_slot,
                 st.session_state["run_events"][selected_student_id].append,
-                refresh_chat,
+                refresh_view,
             )
         st.session_state["run_logs"][selected_student_id] = log_lines
-        trace = parse_agent_trace(log_lines)
-        st.session_state["agent_traces"][selected_student_id] = trace
-        update_agent_traces(AGENT_TRACE_PATH, selected_student_id, trace)
+        hydrate_agent_traces()
         st.session_state["last_status"][selected_student_id] = "completed"
         st.session_state["run_state"][selected_student_id] = "completed"
         run_status_slot.success("✅ Tutor run completed.")
-        render_chat_view()
+        entries = load_entries_for_selected_student()
+        current = st.session_state.get("agent_traces", {})
+        trace = current.get(selected_student_id, [])
+        if pitch_mode:
+            render_pitch_view(entries, trace)
+        else:
+            render_chat_view(entries)
         st.rerun()
     except Exception as exc:
         st.session_state["last_status"][selected_student_id] = f"error: {exc}"
         st.session_state["run_state"][selected_student_id] = f"error: {exc}"
         run_status_slot.error(f"Run failed: {exc}")
 
-student_entries = render_chat_view()
+student_entries = load_entries_for_selected_student()
+current_trace = (
+    st.session_state.get("agent_traces", {}).get(selected_student_id, [])
+    if selected_student_id
+    else []
+)
+if pitch_mode:
+    render_pitch_view(student_entries, current_trace)
+else:
+    render_chat_view(student_entries)
 
 with right:
     st.subheader("Agent activity")
-    trace = (
-        st.session_state.get("agent_traces", {}).get(selected_student_id, [])
-        if selected_student_id
-        else []
-    )
+    trace = current_trace
     topic_filter = "All"
     topic_choices = ["All"]
     if student_entries:

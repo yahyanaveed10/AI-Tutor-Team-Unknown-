@@ -19,6 +19,7 @@ from src.models import StudentState, Message
 from src.services.llm import LLMService
 from src.services.knowunity import KnowunityClient
 from src.services.database import DatabaseService
+from src.services.trace_store import TraceStore
 
 logging.basicConfig(level=settings.LOG_LEVEL, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
@@ -28,6 +29,7 @@ def run_conversation(
     llm: LLMService,
     api: KnowunityClient,
     db: DatabaseService,
+    trace_events: list[dict[str, str]],
     student_id: str,
     topic: dict,
     turns: int
@@ -54,6 +56,7 @@ def run_conversation(
     state.history.append(Message(role="tutor", content=opener))
     db.save_state(state)
     log.info(f"[Turn 0] Tutor: {opener[:80]}...")
+    trace_events.append({"agent": "Opener", "detail": opener, "topic": topic_name})
     
     response = api.interact(conv_id, opener)
     student_msg = response["student_response"]
@@ -76,6 +79,11 @@ def run_conversation(
             tutoring_started = True
             switch_reason = "shot_clock"
             log.warning(f">>> SHOT CLOCK: Forcing switch at Turn {SHOT_CLOCK} (Conf={state.confidence:.2f})")
+            trace_events.append({
+                "agent": "Shot Clock",
+                "detail": f"SHOT CLOCK: Forcing switch at Turn {SHOT_CLOCK} (Conf={state.confidence:.2f})",
+                "topic": topic_name,
+            })
         
         if not level_frozen and state.confidence < 0.75:
             # DIAGNOSIS PHASE
@@ -124,6 +132,14 @@ def run_conversation(
             state.history.append(Message(role="tutor", content=tutor_msg))
             db.save_state(state)
             log.info(f"[DIAGNOSIS Turn {state.turn_count}] Level={state.estimated_level} Conf={smoothed_conf:.2f} (LLM={llm_level}, signal={signal:.1f})")
+            trace_events.append({
+                "agent": "Detective",
+                "detail": (
+                    f"Level={state.estimated_level} Conf={smoothed_conf:.2f} "
+                    f"(LLM={llm_level}, signal={signal:.1f})"
+                ),
+                "topic": topic_name,
+            })
             
             # Level freezing: once confident, lock it
             if state.confidence >= 0.75:
@@ -131,6 +147,14 @@ def run_conversation(
                 tutoring_started = True
                 switch_reason = "confidence"
                 log.info(f">>> Level FROZEN at {state.estimated_level} (confidence={state.confidence:.2f})")
+                trace_events.append({
+                    "agent": "Confidence Gate",
+                    "detail": (
+                        f"Level FROZEN at {state.estimated_level} "
+                        f"(confidence={state.confidence:.2f})"
+                    ),
+                    "topic": topic_name,
+                })
         else:
             # TUTORING PHASE
             tutoring_started = True
@@ -138,6 +162,11 @@ def run_conversation(
             state.history.append(Message(role="tutor", content=tutor_msg))
             db.save_state(state)
             log.info(f"[TUTORING Turn {state.turn_count}] Teaching at Level {state.estimated_level}")
+            trace_events.append({
+                "agent": "Tutor",
+                "detail": f"Teaching at Level {state.estimated_level}",
+                "topic": topic_name,
+            })
         
         # Send to student
         response = api.interact(conv_id, tutor_msg)
@@ -153,6 +182,74 @@ def run_conversation(
     db.save_state(state)
     
     return state.estimated_level
+
+
+def run_batch(
+    llm: LLMService,
+    api: KnowunityClient,
+    db: DatabaseService,
+    trace_store: TraceStore,
+    args: argparse.Namespace,
+) -> list[dict]:
+    """Run tutor sessions for the selected dataset and persist traces/predictions."""
+    # Get students
+    students = api.list_students(args.set_type)
+    if args.student_id:
+        students = [s for s in students if s["id"] == args.student_id]
+    
+    log.info(f"Found {len(students)} students")
+    
+    predictions = []
+    convo_count = 0
+    
+    for student in students:
+        sid = student["id"]
+        log.info(f"\n=== Student: {student.get('name', sid)} ===")
+        student_trace: list[dict[str, str]] = []
+        
+        topics = api.get_topics(sid)
+        
+        for topic in topics:
+            # Check conversation limit
+            if args.max_convos > 0 and convo_count >= args.max_convos:
+                log.info(f"Reached max conversations limit ({args.max_convos})")
+                break
+            
+            try:
+                level = run_conversation(llm, api, db, student_trace, sid, topic, args.turns)
+                predictions.append({
+                    "student_id": sid,
+                    "topic_id": topic["id"],
+                    "predicted_level": level
+                })
+                convo_count += 1
+            except Exception as e:
+                log.error(f"Error: {e}")
+                predictions.append({
+                    "student_id": sid,
+                    "topic_id": topic["id"],
+                    "predicted_level": 3  # Default fallback
+                })
+                convo_count += 1
+            finally:
+                trace_store.update_student(sid, student_trace)
+        
+        # Also break outer loop if limit reached
+        if args.max_convos > 0 and convo_count >= args.max_convos:
+            break
+    
+    # Save predictions
+    Path("data").mkdir(exist_ok=True)
+    with open("data/predictions.json", "w") as f:
+        json.dump(predictions, f, indent=2)
+    log.info(f"Saved {len(predictions)} predictions to data/predictions.json")
+    
+    # Optional: submit
+    if args.submit:
+        result = api.submit_predictions(predictions, args.set_type)
+        log.info(f"MSE Score: {result.get('mse_score')}")
+    
+    return predictions
 
 
 def main():
@@ -171,62 +268,9 @@ def main():
     llm = LLMService()
     api = KnowunityClient()
     db = DatabaseService()
+    trace_store = TraceStore()
     
-    # Get students
-    students = api.list_students(args.set_type)
-    if args.student_id:
-        students = [s for s in students if s["id"] == args.student_id]
-    
-    log.info(f"Found {len(students)} students")
-    
-    predictions = []
-    convo_count = 0
-    
-    for student in students:
-        sid = student["id"]
-        log.info(f"\n=== Student: {student.get('name', sid)} ===")
-        
-        topics = api.get_topics(sid)
-        
-        for topic in topics:
-            # Check conversation limit
-            if args.max_convos > 0 and convo_count >= args.max_convos:
-                log.info(f"Reached max conversations limit ({args.max_convos})")
-                break
-            
-            try:
-                level = run_conversation(llm, api, db, sid, topic, args.turns)
-                predictions.append({
-                    "student_id": sid,
-                    "topic_id": topic["id"],
-                    "predicted_level": level
-                })
-                convo_count += 1
-            except Exception as e:
-                log.error(f"Error: {e}")
-                predictions.append({
-                    "student_id": sid,
-                    "topic_id": topic["id"],
-                    "predicted_level": 3  # Default fallback
-                })
-                convo_count += 1
-        
-        # Also break outer loop if limit reached
-        if args.max_convos > 0 and convo_count >= args.max_convos:
-            break
-    
-    # Save predictions
-    Path("data").mkdir(exist_ok=True)
-    with open("data/predictions.json", "w") as f:
-        json.dump(predictions, f, indent=2)
-    log.info(f"Saved {len(predictions)} predictions to data/predictions.json")
-    
-    # Optional: submit
-    if args.submit:
-        result = api.submit_predictions(predictions, args.set_type)
-        log.info(f"MSE Score: {result.get('mse_score')}")
-    
-    return predictions
+    return run_batch(llm, api, db, trace_store, args)
 
 
 if __name__ == "__main__":

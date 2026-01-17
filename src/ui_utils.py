@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from typing import Iterable
+
+import re
 
 
 def parse_agent_trace(log_lines: Iterable[str]) -> list[dict[str, str]]:
@@ -56,32 +56,44 @@ def parse_agent_trace(log_lines: Iterable[str]) -> list[dict[str, str]]:
     return trace
 
 
-def load_agent_traces(path: str | Path) -> dict[str, list[dict[str, str]]]:
-    """Load persisted agent traces from disk."""
-    trace_path = Path(path)
-    if not trace_path.exists():
-        return {}
-    try:
-        data = json.loads(trace_path.read_text())
-    except json.JSONDecodeError:
-        return {}
-    return data if isinstance(data, dict) else {}
+def condense_trace_timeline(trace: Iterable[dict[str, str]]) -> list[str]:
+    """Return a condensed agent timeline with consecutive duplicates removed."""
+    timeline: list[str] = []
+    for event in trace:
+        agent = event.get("agent", "").strip()
+        if not agent:
+            continue
+        if not timeline or timeline[-1] != agent:
+            timeline.append(agent)
+    return timeline
 
 
-def save_agent_traces(path: str | Path, traces: dict[str, list[dict[str, str]]]) -> None:
-    """Persist agent traces to disk."""
-    trace_path = Path(path)
-    trace_path.parent.mkdir(exist_ok=True)
-    trace_path.write_text(json.dumps(traces, indent=2))
+def extract_diagnosis_metrics(
+    trace: Iterable[dict[str, str]],
+) -> list[dict[str, float]]:
+    """Extract level/confidence sequences from detective trace details."""
+    metrics: list[dict[str, float]] = []
+    pattern = re.compile(r"Level=(\d+).*Conf=([0-9.]+)")
+    for event in trace:
+        if event.get("agent") != "Detective":
+            continue
+        detail = event.get("detail", "")
+        match = pattern.search(detail)
+        if not match:
+            continue
+        level = float(match.group(1))
+        confidence = float(match.group(2))
+        metrics.append(
+            {"turn": float(len(metrics) + 1), "level": level, "confidence": confidence}
+        )
+    return metrics
 
 
-def update_agent_traces(
-    path: str | Path,
-    student_id: str,
-    trace: list[dict[str, str]],
-) -> dict[str, list[dict[str, str]]]:
-    """Update persisted agent traces for a student and return merged data."""
-    traces = load_agent_traces(path)
-    traces[student_id] = trace
-    save_agent_traces(path, traces)
-    return traces
+def find_switch_event(trace: Iterable[dict[str, str]]) -> dict[str, str] | None:
+    """Return the most relevant switch event (confidence gate preferred)."""
+    trace_list = list(trace)
+    for agent_name in ("Confidence Gate", "Shot Clock"):
+        matches = [event for event in trace_list if event.get("agent") == agent_name]
+        if matches:
+            return matches[-1]
+    return None

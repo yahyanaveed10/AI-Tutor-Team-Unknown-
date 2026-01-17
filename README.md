@@ -64,6 +64,7 @@ make docker-ui
 
 - Uses dev students only and runs the tutor via `make docker-run`.
 - Requires Docker running and a valid `.env`.
+- Includes a Pitch Mode toggle for demo-friendly agent summaries.
 
 ---
 
@@ -134,7 +135,7 @@ python -m src.main --submit
 │       └── database.py  # State persistence (JSON)
 ├── data/
 │   ├── state.json       # Detailed turn-by-turn logs
-│   ├── agent_traces.json # Parsed agent activity from Streamlit runs
+│   ├── agent_traces.json # Agent activity traces saved by CLI runs
 │   └── predictions.json # Final output for submission
 └── docs/                # [Click here for Technical Docs](./docs/README.md)
 ```
