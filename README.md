@@ -1,6 +1,6 @@
 # 🧠 AI Tutor - Team Unknown
 
-AI Tutor Engine** for the Knowunity Agent Olympics 2026.
+AI Tutor Engine for the Knowunity Agent Olympics 2026.
 > Built to infer student understanding level (1-5) and teach adaptively using **GPT-5.2-pro**.
 
 ---
